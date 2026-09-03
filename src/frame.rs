@@ -1,4 +1,4 @@
-use crate::{codec::Decoder, DecodeError};
+use crate::{DecodeError, codec::Decoder};
 use std::fmt;
 
 /// Maximum encoded payload accepted from a Scout media frame.

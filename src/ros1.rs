@@ -9,12 +9,12 @@ use crate::{
     frame::{ScoutFrame, StreamType},
     motion::ScoutTwist,
 };
-use rosrust::{api::raii::Subscriber, Publisher, RawMessage, RawMessageDescription};
+use rosrust::{Publisher, RawMessage, RawMessageDescription, api::raii::Subscriber};
 use std::{
     fmt,
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -43,13 +43,25 @@ impl Default for Ros1Config {
     }
 }
 
-pub fn init(config: &Ros1Config, capture_sigint: bool) -> Result<(), Ros1Error> {
-    std::env::set_var("ROS_MASTER_URI", &config.master_uri);
-    if let Some(address) = &config.advertise_address {
-        // ROS_HOSTNAME has priority over ROS_IP in rosrust, so clear it when
-        // the caller explicitly supplies a reachable address.
-        std::env::remove_var("ROS_HOSTNAME");
-        std::env::set_var("ROS_IP", address);
+/// Initializes the process-wide ROS client configuration.
+///
+/// # Safety
+///
+/// On platforms where process-environment access is not thread-safe, the
+/// caller must ensure no other threads are reading or writing environment
+/// variables while this function runs. Call this once, before starting any
+/// application threads.
+pub unsafe fn init(config: &Ros1Config, capture_sigint: bool) -> Result<(), Ros1Error> {
+    // SAFETY: The caller upholds the process-environment synchronization
+    // requirement documented above.
+    unsafe {
+        std::env::set_var("ROS_MASTER_URI", &config.master_uri);
+        if let Some(address) = &config.advertise_address {
+            // ROS_HOSTNAME has priority over ROS_IP in rosrust, so clear it
+            // when the caller explicitly supplies a reachable address.
+            std::env::remove_var("ROS_HOSTNAME");
+            std::env::set_var("ROS_IP", address);
+        }
     }
     rosrust::try_init_with_options(&config.node_name, capture_sigint)
         .map_err(|error| Ros1Error(error.to_string()))

@@ -1,9 +1,10 @@
 [package]
 name = "moorebot-scout"
+authors = ["Corey Montella <corey@mech-lang.org>"]
 version = "0.1.0"
-edition = "2021"
-rust-version = "1.88"
-description = "A pure-Rust ROS 1 driver and protocol library for the Moorebot Scout"
+edition = "2024"
+rust-version = "1.98"
+description = "A driver and protocol library for the Moorebot Scout"
 documentation = "https://docs.rs/moorebot-scout"
 homepage = "https://github.com/cmontella/moorebot-scout"
 repository = "https://github.com/cmontella/moorebot-scout"

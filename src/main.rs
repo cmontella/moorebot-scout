@@ -8,8 +8,8 @@ use moorebot_scout::{
 use std::{
     error::Error,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
     },
     thread,
     time::{Duration, Instant},
@@ -114,7 +114,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
 }
 
 fn discover(config: &Ros1Config) -> Result<(), Box<dyn Error>> {
-    ros1::init(config, true)?;
+    // SAFETY: This command initializes ROS before starting application threads.
+    unsafe { ros1::init(config, true)? };
     let mut published = ros1::published_topics()?;
     published.sort_by(|left, right| left.name.cmp(&right.name));
 
@@ -177,7 +178,9 @@ fn drive(config: &Ros1Config, args: DriveArgs) -> Result<(), Box<dyn Error>> {
     .to_scout_twist(MotionLimits::default())?;
 
     // Own Ctrl-C handling so a zero command can be queued before shutdown.
-    ros1::init(config, false)?;
+    // SAFETY: This command initializes ROS before installing the signal handler
+    // or starting any other application threads.
+    unsafe { ros1::init(config, false)? };
     let running = Arc::new(AtomicBool::new(true));
     let signal_running = Arc::clone(&running);
     let drive_thread = thread::current();
@@ -225,7 +228,9 @@ fn drive(config: &Ros1Config, args: DriveArgs) -> Result<(), Box<dyn Error>> {
 }
 
 fn monitor(config: &Ros1Config, args: MonitorArgs) -> Result<(), Box<dyn Error>> {
-    ros1::init(config, true)?;
+    // SAFETY: This command initializes ROS before creating subscriptions and
+    // their worker threads.
+    unsafe { ros1::init(config, true)? };
     let snapshot = Arc::new(Mutex::new(SensorSnapshot::default()));
     let mut subscriptions = Vec::new();
 
@@ -313,7 +318,8 @@ fn monitor(config: &Ros1Config, args: MonitorArgs) -> Result<(), Box<dyn Error>>
 }
 
 fn camera_bridge(config: &Ros1Config, args: CameraBridgeArgs) -> Result<(), Box<dyn Error>> {
-    ros1::init(config, true)?;
+    // SAFETY: This command initializes ROS before starting the camera bridge.
+    unsafe { ros1::init(config, true)? };
     let bridge = CameraBridge::start(&args.source_topic, &args.output_topic)?;
     println!(
         "Bridging {} -> {} as sensor_msgs/CompressedImage (Ctrl-C to stop)",

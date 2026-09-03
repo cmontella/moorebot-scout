@@ -1,8 +1,8 @@
 use moorebot_scout::{
+    DecodeError,
     frame::{AudioFormat, ScoutFrame, StreamType, MAX_FRAME_DATA_BYTES},
     motion::{MotionLimits, Velocity},
     sensors::{BatteryState, BatteryStatus, IlluminanceSample, ImuSample, RangeSample},
-    DecodeError,
 };
 
 fn u32_field(output: &mut Vec<u8>, value: u32) {

@@ -1,4 +1,4 @@
-use crate::{codec::Decoder, DecodeError};
+use crate::{DecodeError, codec::Decoder};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RosHeader {
