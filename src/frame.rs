@@ -94,13 +94,15 @@ impl ScoutFrame {
 
     pub fn audio_format(&self) -> Option<AudioFormat> {
         match self.stream_type {
-            StreamType::Aac
-                if self.parameters[0] > 0 && self.parameters[1] > 0 && self.parameters[2] > 0 =>
-            {
-                Some(AudioFormat {
-                    sample_rate_hz: self.parameters[0] as u32,
-                    bit_width: self.parameters[1] as u16,
-                    channels: self.parameters[2] as u16,
+            StreamType::Aac => {
+                let sample_rate_hz = u32::try_from(self.parameters[0]).ok()?;
+                let bit_width = u16::try_from(self.parameters[1]).ok()?;
+                let channels = u16::try_from(self.parameters[2]).ok()?;
+
+                (sample_rate_hz > 0 && bit_width > 0 && channels > 0).then_some(AudioFormat {
+                    sample_rate_hz,
+                    bit_width,
+                    channels,
                 })
             }
             _ => None,

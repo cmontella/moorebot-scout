@@ -151,6 +151,13 @@ fn discover(config: &Ros1Config) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn next_motion_wait(period: Duration, now: Instant, deadline: Instant) -> Option<Duration> {
+    deadline
+        .checked_duration_since(now)
+        .filter(|remaining| !remaining.is_zero())
+        .map(|remaining| period.min(remaining))
+}
+
 fn drive(config: &Ros1Config, args: DriveArgs) -> Result<(), Box<dyn Error>> {
     if args.duration_ms == 0 {
         return Err("--duration-ms must be greater than zero".into());
@@ -173,7 +180,11 @@ fn drive(config: &Ros1Config, args: DriveArgs) -> Result<(), Box<dyn Error>> {
     ros1::init(config, false)?;
     let running = Arc::new(AtomicBool::new(true));
     let signal_running = Arc::clone(&running);
-    ctrlc::set_handler(move || signal_running.store(false, Ordering::SeqCst))?;
+    let drive_thread = thread::current();
+    ctrlc::set_handler(move || {
+        signal_running.store(false, Ordering::SeqCst);
+        drive_thread.unpark();
+    })?;
 
     let publisher = TwistPublisher::new(topics::CMD_VEL, 2)?;
     if !publisher.wait_for_a_subscriber(Duration::from_secs(3)) {
@@ -193,7 +204,10 @@ fn drive(config: &Ros1Config, args: DriveArgs) -> Result<(), Box<dyn Error>> {
             send_error = Some(error);
             break;
         }
-        thread::sleep(period);
+        let Some(wait) = next_motion_wait(period, Instant::now(), deadline) else {
+            break;
+        };
+        thread::park_timeout(wait);
     }
 
     // Queue stop before shutting down the ROS transport, including error and
@@ -312,4 +326,28 @@ fn camera_bridge(config: &Ros1Config, args: CameraBridgeArgs) -> Result<(), Box<
         bridge.dropped_frames()
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn motion_wait_does_not_extend_past_deadline() {
+        let now = Instant::now();
+        let deadline = now + Duration::from_millis(500);
+
+        assert_eq!(
+            next_motion_wait(Duration::from_secs(1), now, deadline),
+            Some(Duration::from_millis(500))
+        );
+        assert_eq!(
+            next_motion_wait(Duration::from_millis(100), now, deadline),
+            Some(Duration::from_millis(100))
+        );
+        assert_eq!(
+            next_motion_wait(Duration::from_secs(1), deadline, deadline),
+            None
+        );
+    }
 }

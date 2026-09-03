@@ -84,6 +84,20 @@ fn interprets_h264_and_aac_parameters() {
 }
 
 #[test]
+fn rejects_aac_parameters_that_do_not_fit_the_public_format() {
+    let oversized_bit_width =
+        ScoutFrame::decode_ros(&frame_body(2, [48_000, 65_536, 2, 0], &[1])).unwrap();
+    assert_eq!(oversized_bit_width.audio_format(), None);
+
+    let oversized_channels =
+        ScoutFrame::decode_ros(&frame_body(2, [48_000, 16, 65_537, 0], &[1])).unwrap();
+    assert_eq!(oversized_channels.audio_format(), None);
+
+    let zero_sample_rate = ScoutFrame::decode_ros(&frame_body(2, [0, 16, 2, 0], &[1])).unwrap();
+    assert_eq!(zero_sample_rate.audio_format(), None);
+}
+
+#[test]
 fn rejects_truncated_and_overlong_frames() {
     let mut truncated = frame_body(1, [1, 1, 0, 0], &[1, 2, 3]);
     truncated.pop();
