@@ -22,7 +22,7 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
         rust: [1.98.0, stable]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust toolchain
         run: rustup toolchain install ${{ matrix.rust }} --profile minimal
       - name: Run all-target tests
@@ -34,7 +34,7 @@ jobs:
     name: Formatting, lint, docs, and package
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust tooling
         run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
       - name: Check formatting
