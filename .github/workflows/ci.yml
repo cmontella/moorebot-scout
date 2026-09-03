@@ -31,7 +31,7 @@ jobs:
         run: cargo +${{ matrix.rust }} test --all-targets --no-default-features --locked
 
   quality:
-    name: Formatting, lint, docs, and package
+    name: Formatting, lint, docs, and metadata
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -45,5 +45,5 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
         run: cargo +stable doc --all-features --no-deps --locked
-      - name: Verify crates.io package
-        run: cargo +stable package --locked
+      - name: Validate package metadata
+        run: cargo +stable metadata --locked --format-version 1 --no-deps

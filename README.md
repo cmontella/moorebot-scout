@@ -174,6 +174,13 @@ The initial implementation was derived independently from:
   additional sensor topics and internal service definitions; and
 - the pure-Rust [rosrust](https://github.com/adnanademovic/rosrust) ROS 1 client.
 
+The live transport pins the exact revision from [upstream `rosrust` PR
+#221](https://github.com/adnanademovic/rosrust/pull/221), which rejects oversized
+TCPROS bodies and connection headers before allocating them. Publishing to
+crates.io is disabled in `Cargo.toml` until that fix is available from a
+published dependency; the remaining work is tracked in [issue
+#9](https://github.com/cmontella/moorebot-scout/issues/9).
+
 No first-party source was copied into this crate. See
 [`docs/protocol.md`](docs/protocol.md) for the decoded layout, discovered feature
 map, security/resource-limit audit, and hardware-validation checklist.

@@ -35,6 +35,8 @@ pub const MAX_MEDIA_MESSAGE_BYTES: usize = MAX_FRAME_DATA_BYTES + 1024;
 pub const MAX_SENSOR_MESSAGE_BYTES: usize = MAX_FRAME_ID_BYTES + 4096;
 /// Maximum complete body accepted for a Scout battery message.
 pub const MAX_BATTERY_MESSAGE_BYTES: usize = 4 + MAX_BATTERY_STATUS_VALUES * 4;
+/// Maximum accepted TCPROS connection header.
+const MAX_CONNECTION_HEADER_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 struct BoundedRawMessage<const MAXIMUM_MESSAGE_BYTES: usize>(Vec<u8>);
@@ -100,7 +102,15 @@ impl Default for Ros1Config {
 /// caller must ensure no other threads are reading or writing environment
 /// variables while this function runs. Call this once, before starting any
 /// application threads.
-pub unsafe fn init(config: &Ros1Config, capture_sigint: bool) -> Result<(), Ros1Error> {
+pub unsafe fn init(
+    config: &Ros1Config,
+    capture_sigint: bool,
+    maximum_message_bytes: usize,
+) -> Result<(), Ros1Error> {
+    // The pinned rosrust fork checks this process-wide limit immediately
+    // after reading the TCPROS length prefix and before allocating the body.
+    rosrust::set_max_message_bytes(maximum_message_bytes);
+    rosrust::set_max_connection_header_bytes(MAX_CONNECTION_HEADER_BYTES);
     // SAFETY: The caller upholds the process-environment synchronization
     // requirement documented above.
     unsafe {

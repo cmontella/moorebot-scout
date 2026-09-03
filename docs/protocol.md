@@ -36,11 +36,10 @@ array with a 32-bit element count. The complete fixed portion is 41 bytes:
 | 41 | N | `data` | encoded media payload |
 
 The decoder rejects media payloads larger than 16 MiB before making its own
-copy. The transport decoder and camera bridge queues are also byte-bounded and
-retain at most one pending input or output frame. ROS 1 does not authenticate
-publishers, and `rosrust` allocates the enclosing TCPROS message before invoking
-the bounded decoder, so run the bridge only on a trusted, isolated robot
-network.
+copy. The pinned transport fork rejects a larger enclosing TCPROS packet before
+allocating its body, and the camera bridge retains at most one pending input or
+output frame. ROS 1 does not authenticate publishers, so run the bridge only on
+a trusted, isolated robot network.
 
 The supplied Python decoder reads `seq` and `stamp`, skips four bytes as a
 purported `frame_id`, and then decodes the remaining metadata. There is no
@@ -98,28 +97,31 @@ every live subscription keeps only its newest pending message:
 | Input boundary | Accepted maximum | Enforcement |
 |---|---:|---|
 | `roller_eye/frame.data` | 16 MiB | length checked before payload copy |
-| complete media body | 16 MiB + 1 KiB | bounded subscription decoder |
+| complete media body | 16 MiB + 1 KiB | TCPROS length checked before body allocation |
 | sensor header `frame_id` | 4 KiB | length checked before string copy |
-| complete IMU/range/light body | 8 KiB | bounded subscription decoder |
+| complete IMU/range/light body | 8 KiB | TCPROS length checked before body allocation |
 | battery `int32[]` | 64 values | length checked before vector allocation |
-| complete battery body | 260 bytes | bounded subscription decoder |
+| complete battery body | 260 bytes | TCPROS length checked before body allocation |
+| each TCPROS connection header | 64 KiB | length checked before header allocation |
 | each application camera/sensor queue | 1 message | newer decoded data replaces backlog |
 
 The audit also covered integer conversions, arithmetic used for allocations,
 all other `Vec` and string construction, motion timing and bounds, unsafe code,
-and accidental credentials. The remaining network-facing allocations are in
-the ROS transport and XML-RPC dependencies, not these codecs.
+and accidental credentials. The driver pins a `rosrust` fork that checks the
+outer TCPROS `uint32` body length before allocation and caps connection headers
+at 64 KiB. Its fixed internal staging queue is therefore bounded by both message
+count and the command-specific byte ceiling: 8 KiB for discovery, motion, and
+sensor monitoring, or 16 MiB + 1 KiB for the camera bridge.
 
-In particular, `rosrust` 0.9.12 reads the outer TCPROS `uint32` message length
-and allocates that packet before calling this project's bounded decoder. Its
-internal transport also has a fixed staging queue before the application queue.
-The decoder prevents an oversized packet from being retained or copied again,
-but cannot prevent that first allocation or bound all transport staging memory.
-A ROS master can also direct a subscriber to publisher addresses elsewhere on
-the reachable network. These are properties of this ROS 1 client stack and
-matter because ROS 1 has no built-in peer authentication. Until the transport
-is replaced or patched, connect only to a Scout or ROS master you trust, on an
-isolated robot network; do not expose the driver or ROS master to the internet.
+The old `rosrust` XML-RPC/HTTP dependency chain still has published RustSec
+advisories, and a ROS master can direct a subscriber to publisher addresses
+elsewhere on the reachable network. These properties matter because ROS 1 has
+no built-in peer authentication. Connect only to a Scout or ROS master you
+trust, on an isolated robot network; do not expose the driver or ROS master to
+the internet. Transport dependency modernization remains release-blocking work.
+TCPROS service payloads are also outside the current patch's scope; the driver
+does not call robot services yet, and service support must not be added until
+that path has equivalent bounds.
 
 The first-party README describes the light reading as a packed 32-bit quantity:
 CH0 occupies the upper 16 bits and CH1 the lower 16 bits. The driver preserves

@@ -9,6 +9,7 @@ documentation = "https://docs.rs/moorebot-scout"
 homepage = "https://github.com/cmontella/moorebot-scout"
 repository = "https://github.com/cmontella/moorebot-scout"
 license = "Apache-2.0"
+publish = false
 readme = "README.md"
 keywords = ["moorebot", "scout", "ros", "robotics"]
 categories = ["science::robotics", "hardware-support"]
@@ -35,7 +36,7 @@ ros1 = ["dep:clap", "dep:ctrlc", "dep:env_logger", "dep:rosrust"]
 clap = { version = "4.5", features = ["derive"], optional = true }
 ctrlc = { version = "3.5", optional = true }
 env_logger = { version = "0.11", optional = true }
-rosrust = { version = "0.9.12", optional = true }
+rosrust = { git = "https://github.com/cmontella/rosrust", rev = "ff0b2bdc47d09b52a381ec541650d9f266d6f044", version = "0.9.12", optional = true }
 
 [[bin]]
 name = "moorebot-scout"

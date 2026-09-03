@@ -31,21 +31,32 @@ copying or retaining it. Current maximums are:
 Regression tests cover oversized declared lengths. The full table and audit
 scope are in [`docs/protocol.md`](docs/protocol.md#security-and-resource-limit-audit).
 
-## Known transport limitations
+## Transport hardening and remaining limitations
 
-The optional default `ros1` feature uses `rosrust` 0.9.12. That dependency
-allocates an outer TCPROS packet, and may stage it internally, before this
-project's bounded decoder runs. Consequently, the local limits prevent a large
-message from being copied or retained by our codecs but do not prevent the
-transport's first allocation. Fully addressing this requires a patched or
-replacement ROS 1 transport.
+The optional default `ros1` feature pins a Moorebot-specific `rosrust` fork at
+an exact Git revision. The fork checks the outer TCPROS length before allocating
+the body and caps connection headers at 64 KiB. Before starting ROS, each CLI
+command also selects a process-wide body ceiling: 8 KiB for discovery, motion,
+and sensor monitoring, or 16 MiB + 1 KiB for the camera bridge. The transport's
+fixed staging queue is therefore bounded by both message count and bytes.
+The change has been submitted upstream as [`rosrust` PR
+#221](https://github.com/adnanademovic/rosrust/pull/221).
+
+Cargo substitutes crates.io versions for Git dependencies when it verifies a
+publishable archive. Because crates.io's `rosrust` does not yet contain these
+limits, `Cargo.toml` sets `publish = false`. A real release remains blocked by
+issue #9; publishing must be re-enabled and full package verification restored
+only after the bounded transport comes from a publishable dependency.
 
 A RustSec scan of the current lockfile also reports four vulnerabilities in the
 old HTTP/XML-RPC dependency chain used by `rosrust`: RUSTSEC-2020-0071,
 RUSTSEC-2021-0078, RUSTSEC-2021-0079, and RUSTSEC-2024-0421. Several related
-transitive crates are unmaintained. These dependencies are absent when the
-crate is built with `--no-default-features`. They are not silently allowlisted;
-transport modernization is tracked as release-blocking security work.
+transitive crates are unmaintained, and `hyper` 0.10.16 and `traitobject` 0.1.1
+also carry unsoundness warnings (RUSTSEC-2022-0022 and RUSTSEC-2020-0027).
+These dependencies are absent when the crate is built with
+`--no-default-features`. They are not silently allowlisted;
+[transport modernization is tracked as release-blocking security
+work](https://github.com/cmontella/moorebot-scout/issues/9).
 
 ## Reporting a vulnerability
 

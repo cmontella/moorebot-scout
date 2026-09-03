@@ -118,7 +118,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
 
 fn discover(config: &Ros1Config) -> Result<(), Box<dyn Error>> {
     // SAFETY: This command initializes ROS before starting application threads.
-    unsafe { ros1::init(config, true)? };
+    unsafe { ros1::init(config, true, MAX_SENSOR_MESSAGE_BYTES)? };
     let mut published = ros1::published_topics()?;
     published.sort_by(|left, right| left.name.cmp(&right.name));
 
@@ -183,7 +183,7 @@ fn drive(config: &Ros1Config, args: DriveArgs) -> Result<(), Box<dyn Error>> {
     // Own Ctrl-C handling so a zero command can be queued before shutdown.
     // SAFETY: This command initializes ROS before installing the signal handler
     // or starting any other application threads.
-    unsafe { ros1::init(config, false)? };
+    unsafe { ros1::init(config, false, MAX_SENSOR_MESSAGE_BYTES)? };
     let running = Arc::new(AtomicBool::new(true));
     let signal_running = Arc::clone(&running);
     let drive_thread = thread::current();
@@ -233,7 +233,7 @@ fn drive(config: &Ros1Config, args: DriveArgs) -> Result<(), Box<dyn Error>> {
 fn monitor(config: &Ros1Config, args: MonitorArgs) -> Result<(), Box<dyn Error>> {
     // SAFETY: This command initializes ROS before creating subscriptions and
     // their worker threads.
-    unsafe { ros1::init(config, true)? };
+    unsafe { ros1::init(config, true, MAX_SENSOR_MESSAGE_BYTES)? };
     let snapshot = Arc::new(Mutex::new(SensorSnapshot::default()));
     let mut subscriptions = Vec::new();
 
@@ -338,7 +338,7 @@ fn monitor(config: &Ros1Config, args: MonitorArgs) -> Result<(), Box<dyn Error>>
 
 fn camera_bridge(config: &Ros1Config, args: CameraBridgeArgs) -> Result<(), Box<dyn Error>> {
     // SAFETY: This command initializes ROS before starting the camera bridge.
-    unsafe { ros1::init(config, true)? };
+    unsafe { ros1::init(config, true, ros1::MAX_MEDIA_MESSAGE_BYTES)? };
     let bridge = CameraBridge::start(&args.source_topic, &args.output_topic)?;
     println!(
         "Bridging {} -> {} as sensor_msgs/CompressedImage (Ctrl-C to stop)",
