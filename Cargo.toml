@@ -1,0 +1,40 @@
+[package]
+name = "moorebot-scout"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+description = "A pure-Rust ROS 1 driver and protocol library for the Moorebot Scout"
+documentation = "https://docs.rs/moorebot-scout"
+homepage = "https://github.com/cmontella/moorebot-scout"
+repository = "https://github.com/cmontella/moorebot-scout"
+license = "Apache-2.0"
+readme = "README.md"
+keywords = ["moorebot", "scout", "ros", "robotics"]
+categories = ["science::robotics", "hardware-support"]
+include = [
+  "src/**",
+  "tests/**",
+  "docs/**",
+  "Cargo.toml",
+  "Cargo.lock",
+  "README.md",
+  "LICENSE",
+]
+
+# Keep this future standalone repository independent of the enclosing Mech workspace.
+[workspace]
+
+[features]
+default = ["ros1"]
+ros1 = ["dep:clap", "dep:ctrlc", "dep:env_logger", "dep:rosrust"]
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"], optional = true }
+ctrlc = { version = "3.5", optional = true }
+env_logger = { version = "0.11", optional = true }
+rosrust = { version = "0.9.12", optional = true }
+
+[[bin]]
+name = "moorebot-scout"
+path = "src/main.rs"
+required-features = ["ros1"]
