@@ -1,5 +1,11 @@
 use crate::{DecodeError, codec::Decoder};
 
+/// Maximum accepted byte length for a ROS sensor header frame identifier.
+pub const MAX_FRAME_ID_BYTES: usize = 4 * 1024;
+
+/// Maximum accepted number of integers in the Scout battery status vector.
+pub const MAX_BATTERY_STATUS_VALUES: usize = 64;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RosHeader {
     pub sequence: u32,
@@ -138,6 +144,9 @@ impl BatteryStatus {
         let raw_length = decoder.read_u32()?;
         let length =
             usize::try_from(raw_length).map_err(|_| DecodeError::InvalidLength(raw_length))?;
+        if length > MAX_BATTERY_STATUS_VALUES {
+            return Err(DecodeError::InvalidLength(raw_length));
+        }
         if length < 3 {
             return Err(DecodeError::InvalidValue(
                 "battery status must have at least three values",
@@ -187,7 +196,7 @@ fn decode_header(decoder: &mut Decoder<'_>) -> Result<RosHeader, DecodeError> {
             seconds: decoder.read_u32()?,
             nanoseconds: decoder.read_u32()?,
         },
-        frame_id: decoder.read_string()?,
+        frame_id: decoder.read_string_limited(MAX_FRAME_ID_BYTES)?,
     })
 }
 

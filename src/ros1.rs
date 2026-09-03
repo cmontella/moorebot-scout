@@ -6,12 +6,16 @@
 
 use crate::{
     codec::{write_bytes, write_string, write_u32},
-    frame::{ScoutFrame, StreamType},
+    frame::{MAX_FRAME_DATA_BYTES, ScoutFrame, StreamType},
     motion::ScoutTwist,
+    sensors::{MAX_BATTERY_STATUS_VALUES, MAX_FRAME_ID_BYTES},
 };
-use rosrust::{Publisher, RawMessage, RawMessageDescription, api::raii::Subscriber};
+use rosrust::{
+    Message, Publisher, RawMessage, RawMessageDescription, RosMsg, api::raii::Subscriber,
+};
 use std::{
     fmt,
+    io::{self, Read, Write},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -24,6 +28,51 @@ const TWIST_DEFINITION: &str = "geometry_msgs/Vector3 linear\ngeometry_msgs/Vect
 
 const COMPRESSED_IMAGE_MD5: &str = "8f7a12909da2c9d3332d540a0977563f";
 const COMPRESSED_IMAGE_DEFINITION: &str = "std_msgs/Header header\nstring format\nuint8[] data\n================================================================================\nMSG: std_msgs/Header\nuint32 seq\ntime stamp\nstring frame_id\n";
+
+/// Maximum complete body accepted for a Scout media message.
+pub const MAX_MEDIA_MESSAGE_BYTES: usize = MAX_FRAME_DATA_BYTES + 1024;
+/// Maximum complete body accepted for a standard Scout sensor message.
+pub const MAX_SENSOR_MESSAGE_BYTES: usize = MAX_FRAME_ID_BYTES + 4096;
+/// Maximum complete body accepted for a Scout battery message.
+pub const MAX_BATTERY_MESSAGE_BYTES: usize = 4 + MAX_BATTERY_STATUS_VALUES * 4;
+
+#[derive(Clone, Debug, Default, PartialEq)]
+struct BoundedRawMessage<const MAXIMUM_MESSAGE_BYTES: usize>(Vec<u8>);
+
+impl<const MAXIMUM_MESSAGE_BYTES: usize> Message for BoundedRawMessage<MAXIMUM_MESSAGE_BYTES> {
+    fn msg_definition() -> String {
+        "*".into()
+    }
+
+    fn md5sum() -> String {
+        "*".into()
+    }
+
+    fn msg_type() -> String {
+        "*".into()
+    }
+}
+
+impl<const MAXIMUM_MESSAGE_BYTES: usize> RosMsg for BoundedRawMessage<MAXIMUM_MESSAGE_BYTES> {
+    fn encode<W: Write>(&self, mut writer: W) -> io::Result<()> {
+        writer.write_all(&self.0)
+    }
+
+    fn decode<R: Read>(reader: R) -> io::Result<Self> {
+        let read_limit = u64::try_from(MAXIMUM_MESSAGE_BYTES)
+            .unwrap_or(u64::MAX)
+            .saturating_add(1);
+        let mut bytes = Vec::new();
+        reader.take(read_limit).read_to_end(&mut bytes)?;
+        if bytes.len() > MAXIMUM_MESSAGE_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "ROS message exceeds the configured byte limit",
+            ));
+        }
+        Ok(Self(bytes))
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Ros1Config {
@@ -144,7 +193,7 @@ impl TwistPublisher {
     }
 }
 
-pub fn subscribe_raw<F>(
+pub fn subscribe_raw<const MAXIMUM_MESSAGE_BYTES: usize, F>(
     topic: &str,
     queue_size: usize,
     callback: F,
@@ -152,8 +201,12 @@ pub fn subscribe_raw<F>(
 where
     F: Fn(Vec<u8>) + Send + 'static,
 {
-    rosrust::subscribe::<RawMessage, _>(topic, queue_size, move |message| callback(message.0))
-        .map_err(|error| Ros1Error(error.to_string()))
+    rosrust::subscribe::<BoundedRawMessage<MAXIMUM_MESSAGE_BYTES>, _>(
+        topic,
+        queue_size,
+        move |message| callback(message.0),
+    )
+    .map_err(|error| Ros1Error(error.to_string()))
 }
 
 pub struct CameraBridge {
@@ -169,7 +222,7 @@ impl CameraBridge {
     pub fn start(source_topic: &str, output_topic: &str) -> Result<Self, Ros1Error> {
         let publisher = rosrust::publish_with_description::<RawMessage>(
             output_topic,
-            3,
+            1,
             RawMessageDescription {
                 msg_definition: COMPRESSED_IMAGE_DEFINITION.into(),
                 md5sum: COMPRESSED_IMAGE_MD5.into(),
@@ -187,30 +240,31 @@ impl CameraBridge {
         // Live video should prefer the newest frame. Keeping only one pending
         // input also limits retained memory when a publisher sends at a rate
         // the bridge cannot sustain.
-        let subscriber = subscribe_raw(source_topic, 1, move |bytes| {
-            let Ok(frame) = ScoutFrame::decode_ros(&bytes) else {
-                callback_dropped.fetch_add(1, Ordering::Relaxed);
-                return;
-            };
-            if frame.stream_type != StreamType::Jpeg || !frame.has_jpeg_markers() {
-                callback_dropped.fetch_add(1, Ordering::Relaxed);
-                return;
-            }
+        let subscriber =
+            subscribe_raw::<MAX_MEDIA_MESSAGE_BYTES, _>(source_topic, 1, move |bytes| {
+                let Ok(frame) = ScoutFrame::decode_ros(&bytes) else {
+                    callback_dropped.fetch_add(1, Ordering::Relaxed);
+                    return;
+                };
+                if frame.stream_type != StreamType::Jpeg || !frame.has_jpeg_markers() {
+                    callback_dropped.fetch_add(1, Ordering::Relaxed);
+                    return;
+                }
 
-            let now = rosrust::now();
-            let body = encode_compressed_image(
-                frame.sequence,
-                now.sec,
-                now.nsec,
-                "scout_camera",
-                &frame.data,
-            );
-            if callback_publisher.send(RawMessage(body)).is_ok() {
-                callback_forwarded.fetch_add(1, Ordering::Relaxed);
-            } else {
-                callback_dropped.fetch_add(1, Ordering::Relaxed);
-            }
-        })?;
+                let now = rosrust::now();
+                let body = encode_compressed_image(
+                    frame.sequence,
+                    now.sec,
+                    now.nsec,
+                    "scout_camera",
+                    &frame.data,
+                );
+                if callback_publisher.send(RawMessage(body)).is_ok() {
+                    callback_forwarded.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    callback_dropped.fetch_add(1, Ordering::Relaxed);
+                }
+            })?;
 
         Ok(Self {
             _publisher: publisher,
@@ -259,7 +313,8 @@ impl std::error::Error for Ros1Error {}
 
 #[cfg(test)]
 mod tests {
-    use super::encode_compressed_image;
+    use super::{BoundedRawMessage, encode_compressed_image};
+    use rosrust::RosMsg;
 
     #[test]
     fn compressed_image_has_ros_field_order() {
@@ -273,5 +328,14 @@ mod tests {
         assert_eq!(&body[23..27], b"jpeg");
         assert_eq!(&body[27..31], &4_u32.to_le_bytes());
         assert_eq!(&body[31..], &[0xff, 0xd8, 0xff, 0xd9]);
+    }
+
+    #[test]
+    fn bounded_raw_message_stops_before_copying_an_oversized_body() {
+        let accepted = BoundedRawMessage::<4>::decode(&[1, 2, 3, 4][..]).unwrap();
+        assert_eq!(accepted.0, [1, 2, 3, 4]);
+
+        let error = BoundedRawMessage::<4>::decode(&[1, 2, 3, 4, 5, 6][..]).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
     }
 }

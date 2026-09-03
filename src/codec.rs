@@ -38,13 +38,12 @@ impl<'a> Decoder<'a> {
         Ok(f64::from_le_bytes(self.read_array()?))
     }
 
-    pub(crate) fn read_string(&mut self) -> Result<String, DecodeError> {
-        let bytes = self.read_vec()?;
+    pub(crate) fn read_string_limited(
+        &mut self,
+        maximum_length: usize,
+    ) -> Result<String, DecodeError> {
+        let bytes = self.read_vec_limited(maximum_length)?;
         String::from_utf8(bytes).map_err(|_| DecodeError::InvalidUtf8)
-    }
-
-    pub(crate) fn read_vec(&mut self) -> Result<Vec<u8>, DecodeError> {
-        self.read_vec_limited(usize::MAX)
     }
 
     pub(crate) fn read_vec_limited(

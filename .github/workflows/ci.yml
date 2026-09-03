@@ -14,12 +14,13 @@ concurrency:
 
 jobs:
   test:
-    name: Test (Rust ${{ matrix.rust }})
-    runs-on: ubuntu-latest
+    name: Test (${{ matrix.os }}, Rust ${{ matrix.rust }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        rust: [1.88.0, stable]
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        rust: [1.98.0, stable]
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust toolchain
@@ -27,7 +28,7 @@ jobs:
       - name: Run all-target tests
         run: cargo +${{ matrix.rust }} test --all-targets --locked
       - name: Run protocol-only tests
-        run: cargo +${{ matrix.rust }} test --no-default-features --locked
+        run: cargo +${{ matrix.rust }} test --all-targets --no-default-features --locked
 
   quality:
     name: Formatting, lint, docs, and package

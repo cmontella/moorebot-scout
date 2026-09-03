@@ -1,8 +1,11 @@
 use moorebot_scout::{
     DecodeError,
-    frame::{AudioFormat, ScoutFrame, StreamType, MAX_FRAME_DATA_BYTES},
+    frame::{AudioFormat, MAX_FRAME_DATA_BYTES, ScoutFrame, StreamType},
     motion::{MotionLimits, Velocity},
-    sensors::{BatteryState, BatteryStatus, IlluminanceSample, ImuSample, RangeSample},
+    sensors::{
+        BatteryState, BatteryStatus, IlluminanceSample, ImuSample, MAX_BATTERY_STATUS_VALUES,
+        MAX_FRAME_ID_BYTES, RangeSample,
+    },
 };
 
 fn u32_field(output: &mut Vec<u8>, value: u32) {
@@ -190,13 +193,40 @@ fn decodes_scout_battery_status_vector() {
 }
 
 #[test]
-fn rejects_battery_length_larger_than_the_message() {
+fn rejects_truncated_battery_status() {
     let mut body = Vec::new();
-    u32_field(&mut body, u32::MAX);
+    u32_field(&mut body, 4);
     assert!(matches!(
         BatteryStatus::decode_ros(&body),
         Err(DecodeError::UnexpectedEnd { .. })
     ));
+}
+
+#[test]
+fn rejects_oversized_battery_status_before_allocation() {
+    let mut body = Vec::new();
+    let declared_length = u32::try_from(MAX_BATTERY_STATUS_VALUES + 1).unwrap();
+    u32_field(&mut body, declared_length);
+
+    assert_eq!(
+        BatteryStatus::decode_ros(&body),
+        Err(DecodeError::InvalidLength(declared_length))
+    );
+}
+
+#[test]
+fn rejects_oversized_sensor_frame_id_before_copying() {
+    let mut body = Vec::new();
+    u32_field(&mut body, 1);
+    u32_field(&mut body, 2);
+    u32_field(&mut body, 3);
+    let declared_length = u32::try_from(MAX_FRAME_ID_BYTES + 1).unwrap();
+    u32_field(&mut body, declared_length);
+
+    assert_eq!(
+        ImuSample::decode_ros(&body),
+        Err(DecodeError::InvalidLength(declared_length))
+    );
 }
 
 #[test]

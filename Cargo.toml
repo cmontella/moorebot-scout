@@ -15,10 +15,12 @@ categories = ["science::robotics", "hardware-support"]
 include = [
   "src/**",
   "tests/**",
+  "examples/**",
   "docs/**",
   "Cargo.toml",
   "Cargo.lock",
   "README.md",
+  "SECURITY.md",
   "LICENSE",
 ]
 

@@ -36,10 +36,11 @@ array with a 32-bit element count. The complete fixed portion is 41 bytes:
 | 41 | N | `data` | encoded media payload |
 
 The decoder rejects media payloads larger than 16 MiB before making its own
-copy. The camera bridge also retains at most one pending input frame. ROS 1 does
-not authenticate publishers, and `rosrust` allocates the enclosing TCPROS
-message before invoking the decoder, so run the bridge only on a trusted,
-isolated robot network.
+copy. The transport decoder and camera bridge queues are also byte-bounded and
+retain at most one pending input or output frame. ROS 1 does not authenticate
+publishers, and `rosrust` allocates the enclosing TCPROS message before invoking
+the bounded decoder, so run the bridge only on a trusted, isolated robot
+network.
 
 The supplied Python decoder reads `seq` and `stamp`, skips four bytes as a
 purported `frame_id`, and then decodes the remaining metadata. There is no
@@ -83,6 +84,42 @@ Battery status is an `int32[]` with at least three elements:
 1. state: `0=charging`, `1=discharging`, `2=full`, other=unknown;
 2. estimated percentage from 0 through 100; and
 3. external power flag.
+
+For defense in depth on an unauthenticated ROS 1 graph, sensor header frame IDs
+are limited to 4 KiB and battery messages to 64 integers. Both limits are
+checked before the decoder allocates its retained copy. These are far above the
+sizes used by the known Scout firmware.
+
+## Security and resource-limit audit
+
+Every variable-length field decoded by this crate has an explicit limit, and
+every live subscription keeps only its newest pending message:
+
+| Input boundary | Accepted maximum | Enforcement |
+|---|---:|---|
+| `roller_eye/frame.data` | 16 MiB | length checked before payload copy |
+| complete media body | 16 MiB + 1 KiB | bounded subscription decoder |
+| sensor header `frame_id` | 4 KiB | length checked before string copy |
+| complete IMU/range/light body | 8 KiB | bounded subscription decoder |
+| battery `int32[]` | 64 values | length checked before vector allocation |
+| complete battery body | 260 bytes | bounded subscription decoder |
+| each application camera/sensor queue | 1 message | newer decoded data replaces backlog |
+
+The audit also covered integer conversions, arithmetic used for allocations,
+all other `Vec` and string construction, motion timing and bounds, unsafe code,
+and accidental credentials. The remaining network-facing allocations are in
+the ROS transport and XML-RPC dependencies, not these codecs.
+
+In particular, `rosrust` 0.9.12 reads the outer TCPROS `uint32` message length
+and allocates that packet before calling this project's bounded decoder. Its
+internal transport also has a fixed staging queue before the application queue.
+The decoder prevents an oversized packet from being retained or copied again,
+but cannot prevent that first allocation or bound all transport staging memory.
+A ROS master can also direct a subscriber to publisher addresses elsewhere on
+the reachable network. These are properties of this ROS 1 client stack and
+matter because ROS 1 has no built-in peer authentication. Until the transport
+is replaced or patched, connect only to a Scout or ROS master you trust, on an
+isolated robot network; do not expose the driver or ROS master to the internet.
 
 The first-party README describes the light reading as a packed 32-bit quantity:
 CH0 occupies the upper 16 bits and CH1 the lower 16 bits. The driver preserves

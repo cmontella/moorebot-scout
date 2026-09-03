@@ -1,7 +1,10 @@
 use clap::{Args, Parser, Subcommand};
 use moorebot_scout::{
     motion::{MotionLimits, ScoutTwist, Velocity},
-    ros1::{self, CameraBridge, Ros1Config, TwistPublisher},
+    ros1::{
+        self, CameraBridge, MAX_BATTERY_MESSAGE_BYTES, MAX_SENSOR_MESSAGE_BYTES, Ros1Config,
+        TwistPublisher,
+    },
     sensors::{BatteryStatus, IlluminanceSample, ImuSample, RangeSample},
     services, topics,
 };
@@ -235,38 +238,54 @@ fn monitor(config: &Ros1Config, args: MonitorArgs) -> Result<(), Box<dyn Error>>
     let mut subscriptions = Vec::new();
 
     let imu_snapshot = Arc::clone(&snapshot);
-    subscriptions.push(ros1::subscribe_raw(topics::IMU, 20, move |bytes| {
-        if let Ok(value) = ImuSample::decode_ros(&bytes) {
-            imu_snapshot.lock().expect("sensor snapshot poisoned").imu = Some(value);
-        }
-    })?);
+    subscriptions.push(ros1::subscribe_raw::<MAX_SENSOR_MESSAGE_BYTES, _>(
+        topics::IMU,
+        1,
+        move |bytes| {
+            if let Ok(value) = ImuSample::decode_ros(&bytes) {
+                imu_snapshot.lock().expect("sensor snapshot poisoned").imu = Some(value);
+            }
+        },
+    )?);
 
     let tof_snapshot = Arc::clone(&snapshot);
-    subscriptions.push(ros1::subscribe_raw(topics::TOF, 5, move |bytes| {
-        if let Ok(value) = RangeSample::decode_ros(&bytes) {
-            tof_snapshot.lock().expect("sensor snapshot poisoned").tof = Some(value);
-        }
-    })?);
+    subscriptions.push(ros1::subscribe_raw::<MAX_SENSOR_MESSAGE_BYTES, _>(
+        topics::TOF,
+        1,
+        move |bytes| {
+            if let Ok(value) = RangeSample::decode_ros(&bytes) {
+                tof_snapshot.lock().expect("sensor snapshot poisoned").tof = Some(value);
+            }
+        },
+    )?);
 
     let light_snapshot = Arc::clone(&snapshot);
-    subscriptions.push(ros1::subscribe_raw(topics::LIGHT, 5, move |bytes| {
-        if let Ok(value) = IlluminanceSample::decode_ros(&bytes) {
-            light_snapshot
-                .lock()
-                .expect("sensor snapshot poisoned")
-                .light = Some(value);
-        }
-    })?);
+    subscriptions.push(ros1::subscribe_raw::<MAX_SENSOR_MESSAGE_BYTES, _>(
+        topics::LIGHT,
+        1,
+        move |bytes| {
+            if let Ok(value) = IlluminanceSample::decode_ros(&bytes) {
+                light_snapshot
+                    .lock()
+                    .expect("sensor snapshot poisoned")
+                    .light = Some(value);
+            }
+        },
+    )?);
 
     let battery_snapshot = Arc::clone(&snapshot);
-    subscriptions.push(ros1::subscribe_raw(topics::BATTERY, 5, move |bytes| {
-        if let Ok(value) = BatteryStatus::decode_ros(&bytes) {
-            battery_snapshot
-                .lock()
-                .expect("sensor snapshot poisoned")
-                .battery = Some(value);
-        }
-    })?);
+    subscriptions.push(ros1::subscribe_raw::<MAX_BATTERY_MESSAGE_BYTES, _>(
+        topics::BATTERY,
+        1,
+        move |bytes| {
+            if let Ok(value) = BatteryStatus::decode_ros(&bytes) {
+                battery_snapshot
+                    .lock()
+                    .expect("sensor snapshot poisoned")
+                    .battery = Some(value);
+            }
+        },
+    )?);
 
     println!("Monitoring Scout sensors from {}...", config.master_uri);
     let started = Instant::now();

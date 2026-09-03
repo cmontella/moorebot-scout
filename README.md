@@ -10,6 +10,16 @@ the crate does **not** require a local ROS installation.
 > but this version has not yet been exercised against a physical Scout. Put the
 > robot on blocks for the first motion test and keep a hand on its power button.
 
+## Start here
+
+New to Rust, ROS, or networked robots? Follow the
+[student getting-started guide](docs/getting-started.md). It explains every
+prerequisite, how to find the correct network address on Windows, macOS, and
+Linux, what output to expect, and how to perform a cautious first hardware test.
+
+If you want to use the crate from another Rust program, see the
+[library examples](docs/library-usage.md).
+
 ## What works in this first slice
 
 - Enumerate the live ROS topics and services, with annotations for known Scout
@@ -36,14 +46,24 @@ cargo build --release
 cargo test --all-targets
 ```
 
+CI verifies the default ROS 1 build and the protocol-only build on Linux,
+macOS, and Windows using both Rust 1.98 and the current stable toolchain.
+
 To build only the protocol library:
 
 ```sh
 cargo build --no-default-features
 ```
 
-The CLI is available at `target/release/moorebot-scout`, or can be run through
-Cargo as shown below.
+Two examples work without a robot or ROS installation:
+
+```sh
+cargo run --example motion_mapping --no-default-features
+cargo run --example list_known_interfaces --no-default-features
+```
+
+The CLI is available at `target/release/moorebot-scout` (`.exe` on Windows), or
+can be run through Cargo as shown below.
 
 ## Connect to a Scout
 
@@ -156,9 +176,16 @@ The initial implementation was derived independently from:
 
 No first-party source was copied into this crate. See
 [`docs/protocol.md`](docs/protocol.md) for the decoded layout, discovered feature
-map, and hardware-validation checklist.
+map, security/resource-limit audit, and hardware-validation checklist.
 
 This crate is not affiliated with or endorsed by Moorebot or Pilot Labs.
+
+## Security
+
+ROS 1 peers are unauthenticated. Use the driver only with a trusted Scout and
+ROS master on an isolated robot network. See the [security policy and threat
+model](SECURITY.md) for input limits, known `rosrust` transport and dependency
+risks, and private reporting instructions.
 
 ## Roadmap
 
