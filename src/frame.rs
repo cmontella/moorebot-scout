@@ -1,6 +1,11 @@
 use crate::{codec::Decoder, DecodeError};
 use std::fmt;
 
+/// Maximum encoded payload accepted from a Scout media frame.
+///
+/// The limit is checked before decoder-owned memory is allocated or copied.
+pub const MAX_FRAME_DATA_BYTES: usize = 16 * 1024 * 1024;
+
 /// The payload type used by the Scout's `roller_eye/frame` message.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StreamType {
@@ -60,7 +65,7 @@ impl ScoutFrame {
             decoder.read_i32()?,
             decoder.read_i32()?,
         ];
-        let data = decoder.read_vec()?;
+        let data = decoder.read_vec_limited(MAX_FRAME_DATA_BYTES)?;
         decoder.finish()?;
 
         Ok(Self {

@@ -35,6 +35,12 @@ array with a 32-bit element count. The complete fixed portion is 41 bytes:
 | 37 | 4 | `data.length` | payload byte count |
 | 41 | N | `data` | encoded media payload |
 
+The decoder rejects media payloads larger than 16 MiB before making its own
+copy. The camera bridge also retains at most one pending input frame. ROS 1 does
+not authenticate publishers, and `rosrust` allocates the enclosing TCPROS
+message before invoking the decoder, so run the bridge only on a trusted,
+isolated robot network.
+
 The supplied Python decoder reads `seq` and `stamp`, skips four bytes as a
 purported `frame_id`, and then decodes the remaining metadata. There is no
 `frame_id` in the message definition. The skip happens to preserve the correct

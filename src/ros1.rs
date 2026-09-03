@@ -172,7 +172,10 @@ impl CameraBridge {
         let callback_forwarded = Arc::clone(&forwarded);
         let callback_dropped = Arc::clone(&dropped);
 
-        let subscriber = subscribe_raw(source_topic, 3, move |bytes| {
+        // Live video should prefer the newest frame. Keeping only one pending
+        // input also limits retained memory when a publisher sends at a rate
+        // the bridge cannot sustain.
+        let subscriber = subscribe_raw(source_topic, 1, move |bytes| {
             let Ok(frame) = ScoutFrame::decode_ros(&bytes) else {
                 callback_dropped.fetch_add(1, Ordering::Relaxed);
                 return;

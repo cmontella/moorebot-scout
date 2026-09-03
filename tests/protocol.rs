@@ -1,5 +1,5 @@
 use moorebot_scout::{
-    frame::{AudioFormat, ScoutFrame, StreamType},
+    frame::{AudioFormat, ScoutFrame, StreamType, MAX_FRAME_DATA_BYTES},
     motion::{MotionLimits, Velocity},
     sensors::{BatteryState, BatteryStatus, IlluminanceSample, ImuSample, RangeSample},
     DecodeError,
@@ -111,6 +111,18 @@ fn rejects_truncated_and_overlong_frames() {
     assert_eq!(
         ScoutFrame::decode_ros(&overlong),
         Err(DecodeError::TrailingBytes(1))
+    );
+}
+
+#[test]
+fn rejects_oversized_media_before_copying_the_payload() {
+    let mut oversized = frame_body(1, [1920, 1080, 0, 0], &[]);
+    let declared_length = u32::try_from(MAX_FRAME_DATA_BYTES + 1).unwrap();
+    oversized[37..41].copy_from_slice(&declared_length.to_le_bytes());
+
+    assert_eq!(
+        ScoutFrame::decode_ros(&oversized),
+        Err(DecodeError::InvalidLength(declared_length))
     );
 }
 

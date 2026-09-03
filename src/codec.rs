@@ -44,9 +44,19 @@ impl<'a> Decoder<'a> {
     }
 
     pub(crate) fn read_vec(&mut self) -> Result<Vec<u8>, DecodeError> {
+        self.read_vec_limited(usize::MAX)
+    }
+
+    pub(crate) fn read_vec_limited(
+        &mut self,
+        maximum_length: usize,
+    ) -> Result<Vec<u8>, DecodeError> {
         let raw_length = self.read_u32()?;
         let length =
             usize::try_from(raw_length).map_err(|_| DecodeError::InvalidLength(raw_length))?;
+        if length > maximum_length {
+            return Err(DecodeError::InvalidLength(raw_length));
+        }
         Ok(self.take(length)?.to_vec())
     }
 
