@@ -20,17 +20,18 @@ Linux, what output to expect, and how to perform a cautious first hardware test.
 For normal use, download the package for your computer from [GitHub
 Releases](https://github.com/cmontella/moorebot-scout/releases). Each package
 contains one executable—no Rust, ROS, Python, or MATLAB installation is needed.
-After extracting it, connect to the Scout network and run:
+After extracting it, connect to the Scout network and run the executable:
 
 ```text
-./moorebot-scout teleop
+./moorebot-scout
 ```
 
-On Windows, use `./moorebot-scout.exe teleop` in PowerShell. W/S drives,
-A/D strafes, Q/E turns, Up/Down changes speed and update rate, Space saves the
-latest camera image to the Desktop, and Escape stops and exits. Releases are
-currently unsigned hardware previews; read the safety and download notes in the
-student guide before running one.
+On Windows, use `./moorebot-scout.exe` in PowerShell. With no command the
+program finds the Scout and starts keyboard control: W/S drives, A/D strafes,
+Q/E turns, Up/Down changes speed and update rate, Space saves the latest camera
+image to the Desktop, and Escape stops and exits. Releases are currently
+unsigned hardware previews; read the safety and download notes in the student
+guide before running one.
 
 If you want to use the crate from another Rust program, see the
 [library examples](docs/library-usage.md).
@@ -85,12 +86,13 @@ can be run through Cargo as shown below.
 ## Connect to a Scout
 
 1. Connect the computer to the same network as the Scout.
-2. Determine the computer address that the Scout can reach. In the Scout's
-   direct-connect mode this is usually a `10.42.0.x` address.
-3. If the robot advertises ROS nodes as `linaro-alip`, make that hostname resolve
-   to the robot's address (commonly `10.42.0.1`).
-4. Run the command. It asks the operating system which local address routes to
-   the Scout and advertises that address to ROS automatically.
+2. Run the executable. It confirms that the ROS master is reachable, asks the
+   operating system which local address routes to it, and handles the Scout's
+   internal `linaro-alip` hostname inside the process. No hosts-file edit is
+   needed.
+3. When possible, it matches the current Wi-Fi or ARP MAC address to the
+   classroom robot list and prints the robot's name. Identity detection is
+   informational and does not affect connectivity or authorize motion.
 
 List everything the firmware currently exposes:
 
@@ -165,8 +167,11 @@ to 1–100 Hz.
 First put the Scout on a stable stand with every wheel clear, then run:
 
 ```sh
-moorebot-scout teleop
+moorebot-scout
 ```
+
+The explicit `moorebot-scout teleop` command behaves the same way and accepts
+the advanced options below.
 
 | Key | Action |
 |---|---|
@@ -199,8 +204,11 @@ The crate deliberately separates protocol work from transport:
 
 ```text
 Rust application
+  ├─ keyboard control + Desktop picture saving
   ├─ motion + media + sensor codecs (no ROS installation required)
-  └─ ROS 1 transport (`rosrust`, raw wire messages)
+  └─ ROS 1 transport (`rosrust`, bounded raw wire messages)
+          ├─ selects the computer's route automatically
+          └─ maps the Scout-only `linaro-alip` name internally
           ↕ TCPROS/XML-RPC over the local network
       ROS master and nodes running on the Scout
 ```
@@ -219,11 +227,12 @@ The initial implementation was derived independently from:
   additional sensor topics and internal service definitions; and
 - the pure-Rust [rosrust](https://github.com/adnanademovic/rosrust) ROS 1 client.
 
-The live transport pins the exact revision from [upstream `rosrust` PR
-#221](https://github.com/adnanademovic/rosrust/pull/221), which rejects oversized
-TCPROS bodies and connection headers before allocating them. Publishing to
-crates.io is disabled in `Cargo.toml` until that fix is available from a
-published dependency; the remaining work is tracked in [issue
+The live transport pins an exact `rosrust` fork revision. Its allocation limits
+were submitted in [upstream `rosrust` PR
+#221](https://github.com/adnanademovic/rosrust/pull/221); the revision also adds
+the narrow peer-hostname alias needed for Scout firmware. Publishing to
+crates.io is disabled in `Cargo.toml` until the transport fixes are available
+from a published dependency; the remaining work is tracked in [issue
 #9](https://github.com/cmontella/moorebot-scout/issues/9).
 
 No first-party source was copied into this crate. See

@@ -16,7 +16,7 @@ use rosrust::{
 use std::{
     fmt,
     io::{self, Read, Write},
-    net::{SocketAddr, ToSocketAddrs, UdpSocket},
+    net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs, UdpSocket},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -38,6 +38,8 @@ pub const MAX_SENSOR_MESSAGE_BYTES: usize = MAX_FRAME_ID_BYTES + 4096;
 pub const MAX_BATTERY_MESSAGE_BYTES: usize = 4 + MAX_BATTERY_STATUS_VALUES * 4;
 /// Maximum accepted TCPROS connection header.
 const MAX_CONNECTION_HEADER_BYTES: usize = 64 * 1024;
+const MASTER_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+const SCOUT_INTERNAL_HOSTNAME: &str = "linaro-alip";
 
 #[derive(Clone, Debug, Default, PartialEq)]
 struct BoundedRawMessage<const MAXIMUM_MESSAGE_BYTES: usize>(Vec<u8>);
@@ -95,6 +97,15 @@ impl Default for Ros1Config {
     }
 }
 
+/// Network addresses selected for this ROS session.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ConnectionInfo {
+    /// Address of the reachable ROS master.
+    pub master_address: SocketAddr,
+    /// Address this computer advertises to Scout ROS nodes.
+    pub advertise_address: IpAddr,
+}
+
 /// Initializes the process-wide ROS client configuration.
 ///
 /// # Safety
@@ -107,15 +118,22 @@ pub unsafe fn init(
     config: &Ros1Config,
     capture_sigint: bool,
     maximum_message_bytes: usize,
-) -> Result<(), Ros1Error> {
+) -> Result<ConnectionInfo, Ros1Error> {
     // The pinned rosrust fork checks this process-wide limit immediately
     // after reading the TCPROS length prefix and before allocating the body.
     rosrust::set_max_message_bytes(maximum_message_bytes);
     rosrust::set_max_connection_header_bytes(MAX_CONNECTION_HEADER_BYTES);
+    let master_address = reachable_master_address(&config.master_uri)?;
     let advertise_address = match &config.advertise_address {
-        Some(address) => address.clone(),
-        None => route_local_address(&config.master_uri)?,
+        Some(address) => address.parse::<IpAddr>().map_err(|_| {
+            Ros1Error(format!(
+                "--advertise-address must be an IPv4 or IPv6 address, not {address:?}"
+            ))
+        })?,
+        None => route_local_address(master_address)?,
     };
+    rosrust::set_host_alias(SCOUT_INTERNAL_HOSTNAME, &master_address.ip().to_string())
+        .map_err(|error| Ros1Error(format!("cannot configure the Scout hostname: {error}")))?;
 
     // SAFETY: The caller upholds the process-environment synchronization
     // requirement documented above.
@@ -124,16 +142,17 @@ pub unsafe fn init(
         // ROS_HOSTNAME has priority over ROS_IP in rosrust. Always clear it so
         // a stale shell setting cannot override the explicit or detected route.
         std::env::remove_var("ROS_HOSTNAME");
-        std::env::set_var("ROS_IP", advertise_address);
+        std::env::set_var("ROS_IP", advertise_address.to_string());
     }
     rosrust::try_init_with_options(&config.node_name, capture_sigint)
-        .map_err(|error| Ros1Error(error.to_string()))
+        .map_err(|error| Ros1Error(error.to_string()))?;
+    Ok(ConnectionInfo {
+        master_address,
+        advertise_address,
+    })
 }
 
-/// Return the local IP selected by the operating system for traffic to the ROS
-/// master. Connecting a UDP socket performs route selection without sending a
-/// packet, so this works with multiple Wi-Fi, Ethernet, and VPN adapters.
-fn route_local_address(master_uri: &str) -> Result<String, Ros1Error> {
+fn reachable_master_address(master_uri: &str) -> Result<SocketAddr, Ros1Error> {
     let authority = master_authority(master_uri)?;
     let mut destinations = authority
         .to_socket_addrs()
@@ -141,19 +160,19 @@ fn route_local_address(master_uri: &str) -> Result<String, Ros1Error> {
         .collect::<Vec<_>>();
     destinations.sort_by_key(|address| !address.is_ipv4());
 
+    if destinations.is_empty() {
+        return Err(Ros1Error(format!(
+            "cannot resolve the Scout ROS master at {authority}"
+        )));
+    }
+
     let mut last_error = None;
-    for destination in destinations {
-        let bind_address = if destination.is_ipv4() {
-            SocketAddr::from(([0, 0, 0, 0], 0))
-        } else {
-            SocketAddr::from(([0_u16; 8], 0))
-        };
-        match UdpSocket::bind(bind_address).and_then(|socket| {
-            socket.connect(destination)?;
-            socket.local_addr()
-        }) {
-            Ok(local) if !local.ip().is_unspecified() => return Ok(local.ip().to_string()),
-            Ok(_) => {}
+    for destination in destinations.into_iter().take(8) {
+        match TcpStream::connect_timeout(&destination, MASTER_CONNECT_TIMEOUT) {
+            Ok(stream) => {
+                drop(stream);
+                return Ok(destination);
+            }
             Err(error) => last_error = Some(error),
         }
     }
@@ -162,8 +181,36 @@ fn route_local_address(master_uri: &str) -> Result<String, Ros1Error> {
         .map(|error| format!(": {error}"))
         .unwrap_or_default();
     Err(Ros1Error(format!(
-        "cannot determine the local address used to reach {master_uri}{detail}; pass --advertise-address explicitly"
+        "cannot reach the Scout ROS master at {authority}{detail}. Connect this computer to the robot_scout_… Wi-Fi, wait for the Scout to finish starting, and try again"
     )))
+}
+
+/// Return the local IP selected by the operating system for traffic to the ROS
+/// master. Connecting a UDP socket performs route selection without sending a
+/// packet, so this works with multiple Wi-Fi, Ethernet, and VPN adapters.
+fn route_local_address(destination: SocketAddr) -> Result<IpAddr, Ros1Error> {
+    let bind_address = if destination.is_ipv4() {
+        SocketAddr::from(([0, 0, 0, 0], 0))
+    } else {
+        SocketAddr::from(([0_u16; 8], 0))
+    };
+    let local = UdpSocket::bind(bind_address)
+        .and_then(|socket| {
+            socket.connect(destination)?;
+            socket.local_addr()
+        })
+        .map_err(|error| {
+            Ros1Error(format!(
+                "cannot select this computer's address for the Scout: {error}; pass --advertise-address explicitly"
+            ))
+        })?;
+    if local.ip().is_unspecified() {
+        return Err(Ros1Error(
+            "the operating system selected an unspecified local address; pass --advertise-address explicitly"
+                .into(),
+        ));
+    }
+    Ok(local.ip())
 }
 
 fn master_authority(master_uri: &str) -> Result<&str, Ros1Error> {
@@ -420,10 +467,9 @@ mod tests {
 
     #[test]
     fn route_selection_returns_a_non_loopback_ipv4_address() {
-        let address = route_local_address("http://192.0.2.1:11311").unwrap();
-        let parsed: std::net::IpAddr = address.parse().unwrap();
-        assert!(parsed.is_ipv4());
-        assert!(!parsed.is_loopback());
-        assert!(!parsed.is_unspecified());
+        let address = route_local_address("192.0.2.1:11311".parse().unwrap()).unwrap();
+        assert!(address.is_ipv4());
+        assert!(!address.is_loopback());
+        assert!(!address.is_unspecified());
     }
 }

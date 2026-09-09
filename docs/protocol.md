@@ -124,6 +124,17 @@ TCPROS service payloads are also outside the current patch's scope; the driver
 does not call robot services yet, and service support must not be added until
 that path has equivalent bounds.
 
+The Scout's ROS graph advertises XML-RPC, topic, and service endpoints using the
+device-only hostname `linaro-alip`. The pinned transport fork applies an exact,
+process-wide alias from that name to the already-reached ROS master's IP. Alias
+inputs are restricted to hostnames or IP addresses without schemes, ports,
+paths, credentials, queries, or fragments, and URI ports and paths are retained
+when the host is replaced. This does not broaden the trust boundary described
+above or modify system name resolution. Classroom-name discovery invokes only
+fixed operating-system commands without a shell, parses their output as an
+informational label, and never makes a safety or authorization decision from
+the result.
+
 The first-party README describes the light reading as a packed 32-bit quantity:
 CH0 occupies the upper 16 bits and CH1 the lower 16 bits. The driver preserves
 the ROS `illuminance` value and offers this split only when it is finite,
