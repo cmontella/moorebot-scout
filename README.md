@@ -17,6 +17,21 @@ New to Rust, ROS, or networked robots? Follow the
 prerequisite, how to find the correct network address on Windows, macOS, and
 Linux, what output to expect, and how to perform a cautious first hardware test.
 
+For normal use, download the package for your computer from [GitHub
+Releases](https://github.com/cmontella/moorebot-scout/releases). Each package
+contains one executable—no Rust, ROS, Python, or MATLAB installation is needed.
+After extracting it, connect to the Scout network and run:
+
+```text
+./moorebot-scout --master http://10.42.0.1:11311 --advertise-address 10.42.0.124 teleop
+```
+
+On Windows, use `./moorebot-scout.exe` in PowerShell. Replace `10.42.0.124`
+with the computer's address on the Scout network. Use W/S to move, A/D to turn,
+Space to save the latest camera image, and Escape to stop and exit. Releases
+are currently unsigned hardware previews; read the safety and download notes in
+the student guide before running one.
+
 If you want to use the crate from another Rust program, see the
 [library examples](docs/library-usage.md).
 
@@ -27,6 +42,8 @@ If you want to use the crate from another Rust program, see the
 - Publish bounded motion commands to `/cmd_vel`, including the Scout's unusual
   linear-axis mapping and a zero-velocity command on normal, error, or Ctrl-C
   exit.
+- Drive interactively with WASD and save the latest valid camera JPEG with
+  Space. A 350 ms input deadman stops movement when key events cease.
 - Decode the Scout's 6-axis IMU, time-of-flight range sensor, ambient-light
   sensor, and custom battery status.
 - Decode the custom `roller_eye/frame` media message correctly.
@@ -38,7 +55,7 @@ The H.264 camera, AAC microphone, object/motion detection, iBeacon, odometry,
 IR light controls, autonomous navigation, docking, and onboard recording are
 mapped but deliberately not presented as working APIs until hardware testing.
 
-## Build
+## Build from source
 
 ```sh
 cd moorebot-scout

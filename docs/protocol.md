@@ -111,7 +111,8 @@ and accidental credentials. The driver pins a `rosrust` fork that checks the
 outer TCPROS `uint32` body length before allocation and caps connection headers
 at 64 KiB. Its fixed internal staging queue is therefore bounded by both message
 count and the command-specific byte ceiling: 8 KiB for discovery, motion, and
-sensor monitoring, or 16 MiB + 1 KiB for the camera bridge.
+sensor monitoring, or 16 MiB + 1 KiB for the camera bridge and interactive
+controller.
 
 The old `rosrust` XML-RPC/HTTP dependency chain still has published RustSec
 advisories, and a ROS master can direct a subscriber to publisher addresses
