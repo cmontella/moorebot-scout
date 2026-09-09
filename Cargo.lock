@@ -1415,7 +1415,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 [[package]]
 name = "ros_message"
 version = "0.1.1"
-source = "git+https://github.com/cmontella/rosrust?rev=965c6982ba8151db819c83f2e585eee8128247f7#965c6982ba8151db819c83f2e585eee8128247f7"
+source = "git+https://github.com/cmontella/rosrust?rev=e8646bfc7e7a1ae4c19f45a9f209b74b0d61eecd#e8646bfc7e7a1ae4c19f45a9f209b74b0d61eecd"
 dependencies = [
  "array-init",
  "hex",
@@ -1431,7 +1431,7 @@ dependencies = [
 [[package]]
 name = "rosrust"
 version = "0.9.12"
-source = "git+https://github.com/cmontella/rosrust?rev=965c6982ba8151db819c83f2e585eee8128247f7#965c6982ba8151db819c83f2e585eee8128247f7"
+source = "git+https://github.com/cmontella/rosrust?rev=e8646bfc7e7a1ae4c19f45a9f209b74b0d61eecd#e8646bfc7e7a1ae4c19f45a9f209b74b0d61eecd"
 dependencies = [
  "byteorder",
  "colored",
@@ -1455,7 +1455,7 @@ dependencies = [
 [[package]]
 name = "rosrust_codegen"
 version = "0.9.6"
-source = "git+https://github.com/cmontella/rosrust?rev=965c6982ba8151db819c83f2e585eee8128247f7#965c6982ba8151db819c83f2e585eee8128247f7"
+source = "git+https://github.com/cmontella/rosrust?rev=e8646bfc7e7a1ae4c19f45a9f209b74b0d61eecd#e8646bfc7e7a1ae4c19f45a9f209b74b0d61eecd"
 dependencies = [
  "error-chain",
  "hex",

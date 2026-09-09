@@ -37,6 +37,7 @@ const TELEOP_REPEAT_DEADMAN: Duration = Duration::from_millis(350);
 const SPEED_SCALE_STEP: f64 = 0.25;
 const MIN_SPEED_SCALE: f64 = 0.25;
 const MAX_SYSTEM_COMMAND_OUTPUT_BYTES: u64 = 64 * 1024;
+const SYSTEM_COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
 const TELEOP_HELP: &str = "Controls:\n  W / S       forward / backward\n  A / D       strafe left / right\n  Q / E       turn left / right\n  Up / Down   increase / decrease speed and control rate\n  Space       save the latest camera frame to the Desktop\n  Esc/Ctrl-C  stop and exit";
 
 #[derive(Parser)]
@@ -897,18 +898,30 @@ fn command_output(program: &Path, arguments: &[&str]) -> Option<String> {
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
-    let mut bytes = Vec::new();
-    child
-        .stdout
-        .take()?
-        .take(MAX_SYSTEM_COMMAND_OUTPUT_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .ok()?;
-    if bytes.len() as u64 > MAX_SYSTEM_COMMAND_OUTPUT_BYTES {
-        let _ = child.kill();
-        bytes.truncate(MAX_SYSTEM_COMMAND_OUTPUT_BYTES as usize);
+    let stdout = child.stdout.take()?;
+    let reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout
+            .take(MAX_SYSTEM_COMMAND_OUTPUT_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map(|_| bytes)
+    });
+    let deadline = Instant::now() + SYSTEM_COMMAND_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
+            Ok(None) | Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+        }
+    }?;
+    let bytes = reader.join().ok()?.ok()?;
+    if !status.success() || bytes.len() as u64 > MAX_SYSTEM_COMMAND_OUTPUT_BYTES {
+        return None;
     }
-    let _ = child.wait();
     Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
