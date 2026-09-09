@@ -1,5 +1,10 @@
 use clap::{Args, Parser, Subcommand};
+use crossterm::{
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    terminal::{disable_raw_mode, enable_raw_mode},
+};
 use moorebot_scout::{
+    frame::{ScoutFrame, StreamType},
     motion::{MotionLimits, ScoutTwist, Velocity},
     ros1::{self, CameraBridge, Ros1Config, TwistPublisher},
     sensors::{BatteryStatus, IlluminanceSample, ImuSample, RangeSample},
@@ -7,12 +12,15 @@ use moorebot_scout::{
 };
 use std::{
     error::Error,
+    fs,
+    io::{self, Write},
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 #[derive(Parser)]
@@ -40,6 +48,8 @@ enum Command {
     Monitor(MonitorArgs),
     /// Convert `/CoreNode/jpg` into standard `sensor_msgs/CompressedImage`.
     CameraBridge(CameraBridgeArgs),
+    /// Drive interactively with WASD and save JPEGs with Space.
+    Teleop(TeleopArgs),
 }
 
 #[derive(Args)]
@@ -76,6 +86,115 @@ struct CameraBridgeArgs {
     output_topic: String,
 }
 
+#[derive(Args)]
+struct TeleopArgs {
+    /// Forward/backward speed in meters per second.
+    #[arg(long, default_value_t = 0.10)]
+    speed: f64,
+    /// Rotation speed in radians per second.
+    #[arg(long, default_value_t = 0.80)]
+    turn_speed: f64,
+    /// Velocity publication frequency.
+    #[arg(long, default_value_t = 20.0)]
+    rate_hz: f64,
+    /// Stop this many milliseconds after the last movement key event.
+    #[arg(long, default_value_t = 250)]
+    deadman_ms: u64,
+    /// Folder for Space-bar JPEG captures; defaults to the Windows Desktop.
+    #[arg(long)]
+    screenshot_dir: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug)]
+struct CameraSnapshot {
+    sequence: u32,
+    jpeg: Vec<u8>,
+}
+
+#[derive(Default)]
+struct TeleopKeys {
+    forward: bool,
+    backward: bool,
+    left: bool,
+    right: bool,
+    last_motion_event: Option<Instant>,
+}
+
+impl TeleopKeys {
+    fn handle(&mut self, key: KeyEvent, now: Instant) {
+        let pressed = !matches!(key.kind, KeyEventKind::Release);
+        let changed = match key.code {
+            KeyCode::Char('w') | KeyCode::Char('W') => {
+                self.forward = pressed;
+                true
+            }
+            KeyCode::Char('s') | KeyCode::Char('S') => {
+                self.backward = pressed;
+                true
+            }
+            KeyCode::Char('a') | KeyCode::Char('A') => {
+                self.left = pressed;
+                true
+            }
+            KeyCode::Char('d') | KeyCode::Char('D') => {
+                self.right = pressed;
+                true
+            }
+            _ => false,
+        };
+        if changed && pressed {
+            self.last_motion_event = Some(now);
+        }
+    }
+
+    fn velocity(&self, args: &TeleopArgs, now: Instant) -> Velocity {
+        let active = self.last_motion_event.is_some_and(|last| {
+            now.saturating_duration_since(last) <= Duration::from_millis(args.deadman_ms)
+        });
+        if !active {
+            return Velocity::default();
+        }
+
+        Velocity {
+            forward_mps: axis(self.forward, self.backward) * args.speed,
+            lateral_mps: 0.0,
+            yaw_rps: axis(self.left, self.right) * args.turn_speed,
+        }
+    }
+
+    fn expire_stale(&mut self, now: Instant, deadman: Duration) {
+        if self
+            .last_motion_event
+            .is_some_and(|last| now.saturating_duration_since(last) > deadman)
+        {
+            self.forward = false;
+            self.backward = false;
+            self.left = false;
+            self.right = false;
+            self.last_motion_event = None;
+        }
+    }
+}
+
+fn axis(positive: bool, negative: bool) -> f64 {
+    f64::from(i8::from(positive) - i8::from(negative))
+}
+
+struct RawModeGuard;
+
+impl RawModeGuard {
+    fn enable() -> io::Result<Self> {
+        enable_raw_mode()?;
+        Ok(Self)
+    }
+}
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+    }
+}
+
 #[derive(Default)]
 struct SensorSnapshot {
     imu: Option<ImuSample>,
@@ -101,6 +220,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             Command::Drive(_) => "moorebot_scout_drive",
             Command::Monitor(_) => "moorebot_scout_monitor",
             Command::CameraBridge(_) => "moorebot_scout_camera_bridge",
+            Command::Teleop(_) => "moorebot_scout_teleop",
         }
         .into(),
     };
@@ -110,6 +230,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
         Command::Drive(args) => drive(&config, args),
         Command::Monitor(args) => monitor(&config, args),
         Command::CameraBridge(args) => camera_bridge(&config, args),
+        Command::Teleop(args) => teleop(&config, args),
     }
 }
 
@@ -334,6 +455,143 @@ fn camera_bridge(config: &Ros1Config, args: CameraBridgeArgs) -> Result<(), Box<
     Ok(())
 }
 
+fn teleop(config: &Ros1Config, args: TeleopArgs) -> Result<(), Box<dyn Error>> {
+    if !args.speed.is_finite() || args.speed <= 0.0 {
+        return Err("--speed must be finite and greater than zero".into());
+    }
+    if !args.turn_speed.is_finite() || args.turn_speed <= 0.0 {
+        return Err("--turn-speed must be finite and greater than zero".into());
+    }
+    if !args.rate_hz.is_finite() || !(1.0..=100.0).contains(&args.rate_hz) {
+        return Err("--rate-hz must be finite and between 1 and 100".into());
+    }
+    if !(100..=2_000).contains(&args.deadman_ms) {
+        return Err("--deadman-ms must be between 100 and 2000".into());
+    }
+
+    let limits = MotionLimits::default();
+    Velocity {
+        forward_mps: args.speed,
+        lateral_mps: 0.0,
+        yaw_rps: args.turn_speed,
+    }
+    .to_scout_twist(limits)?;
+
+    // Own Ctrl-C handling so the terminal is restored and zero velocity is sent.
+    // SAFETY: ROS is initialized before any application threads are started.
+    unsafe { ros1::init(config, false)? };
+    let running = Arc::new(AtomicBool::new(true));
+    let signal_running = Arc::clone(&running);
+    ctrlc::set_handler(move || signal_running.store(false, Ordering::SeqCst))?;
+
+    let publisher = TwistPublisher::new(topics::CMD_VEL, 2)?;
+    if !publisher.wait_for_a_subscriber(Duration::from_secs(5)) {
+        return Err(
+            "no subscriber connected to /cmd_vel; pass --advertise-address with this computer's 10.42.0.x Wi-Fi address"
+                .into(),
+        );
+    }
+
+    let latest_frame = Arc::new(Mutex::new(None::<CameraSnapshot>));
+    let callback_frame = Arc::clone(&latest_frame);
+    let _camera_subscription = ros1::subscribe_raw(topics::JPEG, 1, move |bytes| {
+        let Ok(frame) = ScoutFrame::decode_ros(&bytes) else {
+            return;
+        };
+        if frame.stream_type == StreamType::Jpeg && frame.has_jpeg_markers() {
+            *callback_frame.lock().expect("camera snapshot poisoned") = Some(CameraSnapshot {
+                sequence: frame.sequence,
+                jpeg: frame.data,
+            });
+        }
+    })?;
+
+    let screenshot_dir = args
+        .screenshot_dir
+        .clone()
+        .unwrap_or_else(default_screenshot_dir);
+    fs::create_dir_all(&screenshot_dir)?;
+    let _raw_mode = RawModeGuard::enable()?;
+    println!("W/S forward/back, A/D turn, Space capture, Esc or Ctrl-C quit");
+    println!("Screenshots: {}", screenshot_dir.display());
+    io::stdout().flush()?;
+
+    let period = Duration::from_secs_f64(1.0 / args.rate_hz);
+    let deadman = Duration::from_millis(args.deadman_ms);
+    let mut keys = TeleopKeys::default();
+    let loop_result: Result<(), Box<dyn Error>> = (|| {
+        while running.load(Ordering::SeqCst) && rosrust::is_ok() {
+            let iteration_started = Instant::now();
+            keys.expire_stale(iteration_started, deadman);
+            while event::poll(Duration::ZERO)? {
+                let Event::Key(key) = event::read()? else {
+                    continue;
+                };
+                if key.code == KeyCode::Esc
+                    || (key.modifiers.contains(KeyModifiers::CONTROL)
+                        && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C')))
+                {
+                    running.store(false, Ordering::SeqCst);
+                    break;
+                }
+                if key.code == KeyCode::Char(' ') && matches!(key.kind, KeyEventKind::Press) {
+                    match save_latest_screenshot(&latest_frame, &screenshot_dir) {
+                        Ok(path) => println!("Captured {}", path.display()),
+                        Err(error) => eprintln!("capture failed: {error}"),
+                    }
+                    io::stdout().flush()?;
+                }
+                keys.handle(key, Instant::now());
+            }
+
+            let command = keys
+                .velocity(&args, Instant::now())
+                .to_scout_twist(limits)?;
+            publisher.send(command)?;
+            if let Some(wait) = period.checked_sub(iteration_started.elapsed()) {
+                thread::sleep(wait);
+            }
+        }
+        Ok(())
+    })();
+
+    // Always attempt a stop, including terminal-input and publisher error paths.
+    let stop_result = publisher.send(ScoutTwist::zero());
+    thread::sleep(Duration::from_millis(100));
+    rosrust::shutdown();
+    loop_result?;
+    stop_result?;
+    println!("\nStopped.");
+    Ok(())
+}
+
+fn default_screenshot_dir() -> PathBuf {
+    std::env::var_os("USERPROFILE")
+        .map(PathBuf::from)
+        .map(|profile| profile.join("Desktop"))
+        .filter(|desktop| desktop.is_dir())
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn save_latest_screenshot(
+    latest_frame: &Mutex<Option<CameraSnapshot>>,
+    directory: &Path,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let snapshot = latest_frame
+        .lock()
+        .map_err(|_| "camera snapshot lock is poisoned")?
+        .clone()
+        .ok_or("no camera frame has arrived yet")?;
+    let timestamp_ms = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();
+    let path = directory.join(format!(
+        "scout-{timestamp_ms}-frame-{}.jpg",
+        snapshot.sequence
+    ));
+    fs::write(&path, snapshot.jpeg)?;
+    Ok(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -355,5 +613,28 @@ mod tests {
             next_motion_wait(Duration::from_secs(1), deadline, deadline),
             None
         );
+    }
+
+    #[test]
+    fn teleop_opposite_keys_cancel_each_other() {
+        assert_eq!(axis(false, false), 0.0);
+        assert_eq!(axis(true, false), 1.0);
+        assert_eq!(axis(false, true), -1.0);
+        assert_eq!(axis(true, true), 0.0);
+    }
+
+    #[test]
+    fn teleop_deadman_clears_stale_key_state() {
+        let now = Instant::now();
+        let mut keys = TeleopKeys {
+            forward: true,
+            last_motion_event: Some(now),
+            ..TeleopKeys::default()
+        };
+
+        keys.expire_stale(now + Duration::from_millis(251), Duration::from_millis(250));
+
+        assert!(!keys.forward);
+        assert!(keys.last_motion_event.is_none());
     }
 }

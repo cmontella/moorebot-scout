@@ -1,6 +1,6 @@
 use moorebot_scout::{
     DecodeError,
-    frame::{AudioFormat, ScoutFrame, StreamType, MAX_FRAME_DATA_BYTES},
+    frame::{AudioFormat, MAX_FRAME_DATA_BYTES, ScoutFrame, StreamType},
     motion::{MotionLimits, Velocity},
     sensors::{BatteryState, BatteryStatus, IlluminanceSample, ImuSample, RangeSample},
 };

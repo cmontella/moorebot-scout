@@ -27,10 +27,11 @@ include = [
 
 [features]
 default = ["ros1"]
-ros1 = ["dep:clap", "dep:ctrlc", "dep:env_logger", "dep:rosrust"]
+ros1 = ["dep:clap", "dep:crossterm", "dep:ctrlc", "dep:env_logger", "dep:rosrust"]
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"], optional = true }
+crossterm = { version = "0.29", optional = true }
 ctrlc = { version = "3.5", optional = true }
 env_logger = { version = "0.11", optional = true }
 rosrust = { version = "0.9.12", optional = true }

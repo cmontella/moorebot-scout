@@ -6,9 +6,9 @@ An independent Rust driver and protocol library for the Moorebot Scout. It
 connects directly to the ROS 1 master already running on the robot, so building
 the crate does **not** require a local ROS installation.
 
-> Status: the wire formats and control mapping are covered by offline tests,
-> but this version has not yet been exercised against a physical Scout. Put the
-> robot on blocks for the first motion test and keep a hand on its power button.
+> Status: discovery, sensor decoding, and the JPEG bridge have been exercised
+> against a physical Scout. Motion control remains safety-sensitive: put the
+> robot on blocks for the first test and keep a hand on its power button.
 
 ## What works in this first slice
 
@@ -22,6 +22,8 @@ the crate does **not** require a local ROS installation.
 - Decode the custom `roller_eye/frame` media message correctly.
 - Republish `/CoreNode/jpg` as standard `sensor_msgs/CompressedImage`, which
   makes the color camera usable by normal ROS image tools.
+- Drive interactively with WASD and save the latest camera frame as a JPEG by
+  pressing Space.
 - Build the protocol-only library with no ROS transport dependencies.
 
 The H.264 camera, AAC microphone, object/motion detection, iBeacon, odometry,
@@ -100,6 +102,31 @@ The bridge publishes standard compressed images on
 `/moorebot_scout/camera/image/compressed`. A ROS 1 image viewer can subscribe to
 that topic without knowing about `roller_eye/frame`. Because the output type is
 standard, it is also a cleaner boundary for a later ROS 1-to-ROS 2 bridge.
+
+### Drive with WASD and capture pictures
+
+First place the Scout on a stable stand with all wheels clear. Replace the
+example advertised address with the `10.42.0.x` IPv4 address shown for your
+computer's Wi-Fi adapter after joining the Scout network:
+
+```sh
+cargo run --release -- --advertise-address 10.42.0.124 teleop
+```
+
+Keep the terminal focused while controlling the robot:
+
+| Key | Action |
+|---|---|
+| W / S | forward / backward |
+| A / D | turn left / right |
+| Space | save the latest JPEG to the Windows Desktop |
+| Esc or Ctrl-C | stop and exit |
+
+The default speeds are intentionally low. The command publishes at 20 Hz and
+stops after 250 ms without a movement-key event, even if the terminal misses a
+key-release event. It also sends a zero-velocity command on normal exit or an
+input/publisher error. Use `teleop --help` to change the speed, turn rate,
+dead-man timeout, or screenshot folder.
 
 ### Send a short motion command
 
