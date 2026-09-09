@@ -1118,13 +1118,14 @@ dependencies = [
 
 [[package]]
 name = "moorebot-scout"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "crossterm",
  "ctrlc",
  "env_logger",
  "rosrust",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1414,7 +1415,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 [[package]]
 name = "ros_message"
 version = "0.1.1"
-source = "git+https://github.com/cmontella/rosrust?rev=ff0b2bdc47d09b52a381ec541650d9f266d6f044#ff0b2bdc47d09b52a381ec541650d9f266d6f044"
+source = "git+https://github.com/cmontella/rosrust?rev=e8646bfc7e7a1ae4c19f45a9f209b74b0d61eecd#e8646bfc7e7a1ae4c19f45a9f209b74b0d61eecd"
 dependencies = [
  "array-init",
  "hex",
@@ -1430,7 +1431,7 @@ dependencies = [
 [[package]]
 name = "rosrust"
 version = "0.9.12"
-source = "git+https://github.com/cmontella/rosrust?rev=ff0b2bdc47d09b52a381ec541650d9f266d6f044#ff0b2bdc47d09b52a381ec541650d9f266d6f044"
+source = "git+https://github.com/cmontella/rosrust?rev=e8646bfc7e7a1ae4c19f45a9f209b74b0d61eecd#e8646bfc7e7a1ae4c19f45a9f209b74b0d61eecd"
 dependencies = [
  "byteorder",
  "colored",
@@ -1446,6 +1447,7 @@ dependencies = [
  "serde",
  "serde_derive",
  "socket2",
+ "url 2.5.8",
  "xml-rpc",
  "yaml-rust",
 ]
@@ -1453,7 +1455,7 @@ dependencies = [
 [[package]]
 name = "rosrust_codegen"
 version = "0.9.6"
-source = "git+https://github.com/cmontella/rosrust?rev=ff0b2bdc47d09b52a381ec541650d9f266d6f044#ff0b2bdc47d09b52a381ec541650d9f266d6f044"
+source = "git+https://github.com/cmontella/rosrust?rev=e8646bfc7e7a1ae4c19f45a9f209b74b0d61eecd#e8646bfc7e7a1ae4c19f45a9f209b74b0d61eecd"
 dependencies = [
  "error-chain",
  "hex",

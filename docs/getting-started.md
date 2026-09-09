@@ -33,7 +33,7 @@ want graphical tools such as `rqt_image_view`.
 ```mermaid
 flowchart LR
     subgraph Computer[Student computer: Windows, macOS, or Linux]
-        CLI[Rust driver CLI]
+        CLI[Rust driver: route, hostname fix, controls]
         Viewer[Optional ROS image viewer]
         SSH[Optional SSH client]
     end
@@ -61,7 +61,10 @@ The Rust driver does **not** run commands through SSH. It first asks the ROS
 master where topics live, and then ROS nodes open direct TCPROS connections to
 exchange messages. The program automatically asks the operating system which
 local address reaches the robot and advertises it for those return connections.
-SSH is a separate, optional way to open a Linux terminal on the robot for
+The firmware calls itself `linaro-alip` even when that name is unknown to the
+student computer; the driver maps that exact internal name to the reachable
+Scout address inside its own process. It does not edit system DNS or the hosts
+file. SSH is a separate, optional way to open a Linux terminal on the robot for
 diagnostics.
 
 ## Safety first
@@ -231,7 +234,9 @@ The command asks the Scout's ROS master for every published topic and
 registered service. Part of a successful result should resemble this:
 
 ```text
-ROS master: http://10.42.0.1:11311
+Looking for a Moorebot Scout...
+Connected to the Scout at 10.42.0.1:11311 (this computer: 10.42.0.23).
+Robot: Kíli (d4:9c:dd:eb:0c:f6)
 Published topics:
   /CoreNode/jpg                              roller_eye/frame                 JPEG camera [Bridge]
   /SensorNode/imu                            sensor_msgs/Imu                  6-axis IMU [Read]
@@ -244,19 +249,12 @@ Your list may differ with firmware version and robot state. `Read`, `Write`, or
 `DiscoveredOnly` means the driver recognizes it but does not yet claim that it
 works.
 
-If the output mentions `linaro-alip` or a later command cannot resolve that
-name, add this single mapping to your computer's hosts file:
-
-```text
-10.42.0.1 linaro-alip
-```
-
-- Windows hosts file: `C:\Windows\System32\drivers\etc\hosts` (open the editor
-  as Administrator).
-- macOS/Linux hosts file: `/etc/hosts` (editing requires administrator access
-  on your computer, not on the robot).
-
-Run `discover` again after saving the file.
+The computer address and robot name in your output will differ. The name is a
+best-effort match against the 15 MAC addresses in the supplied classroom list.
+If a MAC address is not visible in the operating system's current Wi-Fi or ARP
+information, the driver says that the classroom name was not detected and
+continues normally. The name is only a convenience label; never use it as a
+security check.
 
 ## 5. Read the sensors
 
@@ -334,11 +332,14 @@ expected. Put the Scout on the floor in a clear, level area away from stairs,
 edges, people, pets, and loose cables. Keep the terminal window focused and be
 ready to use the physical power control.
 
-Start the keyboard controller:
+Start the keyboard controller. Teleop is the default, so the shortest command
+is:
 
 ```text
-./moorebot-scout teleop
+./moorebot-scout
 ```
+
+`./moorebot-scout teleop` is equivalent and is useful when adding options.
 
 | Key | Result |
 |---|---|
@@ -425,16 +426,21 @@ Netcat is installed.
 
 ### The master responds, but subscriptions fail
 
-The program normally selects the advertised address automatically. Add the
-`linaro-alip` hosts entry described above if the error names that host. For an
+Version 0.1.1 and newer translate the Scout's `linaro-alip` hostname internally.
+If an older download prints `No such host is known` or names `linaro-alip`,
+download the newest release instead of editing the system hosts file. For an
 unusual routed setup, `--advertise-address 10.42.0.x` manually overrides route
 selection; it must be the computer's address, not the robot or `127.0.0.1`.
 
 ### `no subscriber connected to /cmd_vel`
 
 The driver deliberately refused to send motion because it could not confirm a
-motor-node subscriber. Run `discover`, verify the robot is fully booted, and
-check address/firewall settings. Do not bypass this guard.
+motor-node subscriber. Run `discover` and verify the robot is fully booted. On
+Windows, open **Windows Security → Firewall & network protection → Allow an app
+through firewall**, allow `moorebot-scout.exe` on **Private** networks, and keep
+Public networks unchecked. If Windows shows a firewall prompt when the program
+starts, make the same Private-only choice. Reconnect to the Scout Wi-Fi and try
+again. Do not disable the firewall or bypass the driver's guard.
 
 ### Sensor monitoring keeps waiting
 
@@ -449,6 +455,12 @@ The following saves discovery output to a file on every supported platform:
 
 ```text
 ./moorebot-scout discover > scout-discover.txt
+```
+
+For detailed transport messages, put `--verbose` before the command:
+
+```text
+./moorebot-scout --verbose discover > scout-discover.txt 2>&1
 ```
 
 Before sharing the file, remove private network names, addresses you do not

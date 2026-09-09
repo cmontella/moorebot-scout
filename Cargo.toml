@@ -1,7 +1,7 @@
 [package]
 name = "moorebot-scout"
 authors = ["Corey Montella <corey@mech-lang.org>"]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.98"
 description = "A driver and protocol library for the Moorebot Scout"
@@ -30,14 +30,24 @@ include = [
 
 [features]
 default = ["ros1"]
-ros1 = ["dep:clap", "dep:crossterm", "dep:ctrlc", "dep:env_logger", "dep:rosrust"]
+ros1 = [
+  "dep:clap",
+  "dep:crossterm",
+  "dep:ctrlc",
+  "dep:env_logger",
+  "dep:rosrust",
+  "dep:windows-sys",
+]
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"], optional = true }
 crossterm = { version = "0.29", optional = true }
 ctrlc = { version = "3.5", optional = true }
 env_logger = { version = "0.11", optional = true }
-rosrust = { git = "https://github.com/cmontella/rosrust", rev = "ff0b2bdc47d09b52a381ec541650d9f266d6f044", version = "0.9.12", optional = true }
+rosrust = { git = "https://github.com/cmontella/rosrust", rev = "e8646bfc7e7a1ae4c19f45a9f209b74b0d61eecd", version = "0.9.12", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_System_SystemInformation"], optional = true }
 
 [[bin]]
 name = "moorebot-scout"

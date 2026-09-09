@@ -9,6 +9,7 @@ mod error;
 
 pub mod frame;
 pub mod motion;
+pub mod robot;
 pub mod sensors;
 pub mod services;
 pub mod topics;

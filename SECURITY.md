@@ -13,6 +13,13 @@ isolated robot network. Do not expose the Scout ROS master or this driver to the
 internet. Treat `--master` as a trusted configuration value: the selected master
 can direct subscriptions to other addresses reachable from the computer.
 
+Scout firmware advertises some ROS endpoints with its private hostname
+`linaro-alip`. The driver rewrites only that exact hostname to the IP address of
+the ROS master it has just reached. The mapping exists only inside the driver
+process; it does not edit DNS or a system hosts file. This improves usability,
+but it does not authenticate the peer. Robot-name detection from local Wi-Fi or
+ARP command output is display-only and is never used to authorize motion.
+
 The factory Wi-Fi and SSH credentials mentioned in the student guide are public
 defaults, not secrets. Change them through the supported Moorebot setup process
 before using the robot on a shared network. Do not place classroom passwords,
@@ -39,7 +46,7 @@ the body and caps connection headers at 64 KiB. Before starting ROS, each CLI
 command also selects a process-wide body ceiling: 8 KiB for discovery, motion,
 and sensor monitoring, or 16 MiB + 1 KiB for camera commands. The transport's
 fixed staging queue is therefore bounded by both message count and bytes.
-The change has been submitted upstream as [`rosrust` PR
+The allocation-limit change has been submitted upstream as [`rosrust` PR
 #221](https://github.com/adnanademovic/rosrust/pull/221).
 
 Cargo substitutes crates.io versions for Git dependencies when it verifies a

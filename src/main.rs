@@ -10,9 +10,10 @@ use crossterm::{
 use moorebot_scout::{
     frame::{ScoutFrame, StreamType},
     motion::{MotionLimits, ScoutTwist, Velocity},
+    robot::{KnownScout, known_scout_in_text},
     ros1::{
-        self, CameraBridge, MAX_BATTERY_MESSAGE_BYTES, MAX_SENSOR_MESSAGE_BYTES, Ros1Config,
-        TwistPublisher,
+        self, CameraBridge, ConnectionInfo, MAX_BATTERY_MESSAGE_BYTES, MAX_SENSOR_MESSAGE_BYTES,
+        Ros1Config, TwistPublisher,
     },
     sensors::{BatteryStatus, IlluminanceSample, ImuSample, RangeSample},
     services, topics,
@@ -20,8 +21,9 @@ use moorebot_scout::{
 use std::{
     error::Error,
     fs::{self, OpenOptions},
-    io::{self, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
+    process::{Command as ProcessCommand, Stdio},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -34,6 +36,8 @@ const TELEOP_INITIAL_REPEAT_GRACE: Duration = Duration::from_millis(1_100);
 const TELEOP_REPEAT_DEADMAN: Duration = Duration::from_millis(350);
 const SPEED_SCALE_STEP: f64 = 0.25;
 const MIN_SPEED_SCALE: f64 = 0.25;
+const MAX_SYSTEM_COMMAND_OUTPUT_BYTES: u64 = 64 * 1024;
+const SYSTEM_COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
 const TELEOP_HELP: &str = "Controls:\n  W / S       forward / backward\n  A / D       strafe left / right\n  Q / E       turn left / right\n  Up / Down   increase / decrease speed and control rate\n  Space       save the latest camera frame to the Desktop\n  Esc/Ctrl-C  stop and exit";
 
 #[derive(Parser)]
@@ -47,8 +51,12 @@ struct Cli {
     #[arg(long, global = true)]
     advertise_address: Option<String>,
 
+    /// Show detailed ROS transport diagnostics.
+    #[arg(short, long, global = true)]
+    verbose: bool,
+
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -107,6 +115,19 @@ struct TeleopArgs {
     camera_topic: String,
 }
 
+impl Default for TeleopArgs {
+    fn default() -> Self {
+        Self {
+            speed: 0.10,
+            strafe_speed: 0.10,
+            turn_speed: 2.0,
+            rate_hz: 40.0,
+            picture_directory: None,
+            camera_topic: topics::JPEG.into(),
+        }
+    }
+}
+
 #[derive(Args)]
 struct MonitorArgs {
     /// Stop after this many seconds; use zero to run until Ctrl-C.
@@ -131,18 +152,29 @@ struct SensorSnapshot {
 }
 
 fn main() {
-    env_logger::init();
-    if let Err(error) = run(Cli::parse()) {
-        eprintln!("error: {error}");
+    let cli = Cli::parse();
+    let default_log_filter = if cli.verbose {
+        "info"
+    } else {
+        "warn,rosrust=off"
+    };
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_log_filter))
+        .init();
+    if let Err(error) = run(cli) {
+        eprintln!("\nCould not start the Moorebot Scout driver:\n  {error}");
+        eprintln!("\nRun with --verbose if an instructor needs the ROS diagnostics.");
         std::process::exit(1);
     }
 }
 
 fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
+    let command = cli
+        .command
+        .unwrap_or_else(|| Command::Teleop(TeleopArgs::default()));
     let config = Ros1Config {
         master_uri: cli.master,
         advertise_address: cli.advertise_address,
-        node_name: match &cli.command {
+        node_name: match &command {
             Command::Discover => "moorebot_scout_discover",
             Command::Drive(_) => "moorebot_scout_drive",
             Command::Teleop(_) => "moorebot_scout_teleop",
@@ -152,7 +184,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
         .into(),
     };
 
-    match cli.command {
+    println!("Looking for a Moorebot Scout...");
+    match command {
         Command::Discover => discover(&config),
         Command::Drive(args) => drive(&config, args),
         Command::Teleop(args) => teleop(&config, args),
@@ -163,11 +196,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
 
 fn discover(config: &Ros1Config) -> Result<(), Box<dyn Error>> {
     // SAFETY: This command initializes ROS before starting application threads.
-    unsafe { ros1::init(config, true, MAX_SENSOR_MESSAGE_BYTES)? };
+    let connection = unsafe { ros1::init(config, true, MAX_SENSOR_MESSAGE_BYTES)? };
+    announce_connection(connection);
     let mut published = ros1::published_topics()?;
     published.sort_by(|left, right| left.name.cmp(&right.name));
 
-    println!("ROS master: {}", config.master_uri);
     println!("Published topics:");
     for topic in published {
         if let Some(known) = topics::known_topic(&topic.name) {
@@ -234,7 +267,8 @@ fn drive(config: &Ros1Config, args: DriveArgs) -> Result<(), Box<dyn Error>> {
     // Own Ctrl-C handling so a zero command can be queued before shutdown.
     // SAFETY: This command initializes ROS before installing the signal handler
     // or starting any other application threads.
-    unsafe { ros1::init(config, false, MAX_SENSOR_MESSAGE_BYTES)? };
+    let connection = unsafe { ros1::init(config, false, MAX_SENSOR_MESSAGE_BYTES)? };
+    announce_connection(connection);
     let running = Arc::new(AtomicBool::new(true));
     let signal_running = Arc::clone(&running);
     let drive_thread = thread::current();
@@ -245,7 +279,7 @@ fn drive(config: &Ros1Config, args: DriveArgs) -> Result<(), Box<dyn Error>> {
 
     let publisher = TwistPublisher::new(topics::CMD_VEL, 2)?;
     if !publisher.wait_for_a_subscriber(Duration::from_secs(3)) {
-        return Err("no subscriber connected to /cmd_vel; refusing to send motion".into());
+        return Err(motor_connection_error().into());
     }
 
     println!(
@@ -589,7 +623,8 @@ fn teleop(config: &Ros1Config, args: TeleopArgs) -> Result<(), Box<dyn Error>> {
 
     // SAFETY: This command initializes ROS before starting any ROS-owned
     // publishers, subscriptions, signal handlers, or worker threads.
-    unsafe { ros1::init(config, false, ros1::MAX_MEDIA_MESSAGE_BYTES)? };
+    let connection = unsafe { ros1::init(config, false, ros1::MAX_MEDIA_MESSAGE_BYTES)? };
+    announce_connection(connection);
     let running = Arc::new(AtomicBool::new(true));
     let signal_running = Arc::clone(&running);
     ctrlc::set_handler(move || signal_running.store(false, Ordering::SeqCst))?;
@@ -615,10 +650,15 @@ fn teleop(config: &Ros1Config, args: TeleopArgs) -> Result<(), Box<dyn Error>> {
     if !publisher.wait_for_a_subscriber(Duration::from_secs(3)) {
         drop(camera_subscription);
         rosrust::shutdown();
-        return Err("no subscriber connected to /cmd_vel; refusing to send motion".into());
+        return Err(motor_connection_error().into());
     }
 
-    println!("Connected to the Scout at {}.", config.master_uri);
+    if camera_subscription.publisher_count() == 0 {
+        println!(
+            "Camera: still waiting for {}. Driving is available; Space will work after a frame arrives.",
+            args.camera_topic
+        );
+    }
     println!("{TELEOP_HELP}");
     let initial_scale = 1.0_f64.min(maximum_speed_scale(&args, limits));
     println!(
@@ -664,7 +704,8 @@ fn default_picture_directory() -> PathBuf {
 fn monitor(config: &Ros1Config, args: MonitorArgs) -> Result<(), Box<dyn Error>> {
     // SAFETY: This command initializes ROS before creating subscriptions and
     // their worker threads.
-    unsafe { ros1::init(config, true, MAX_SENSOR_MESSAGE_BYTES)? };
+    let connection = unsafe { ros1::init(config, true, MAX_SENSOR_MESSAGE_BYTES)? };
+    announce_connection(connection);
     let snapshot = Arc::new(Mutex::new(SensorSnapshot::default()));
     let mut subscriptions = Vec::new();
 
@@ -769,7 +810,8 @@ fn monitor(config: &Ros1Config, args: MonitorArgs) -> Result<(), Box<dyn Error>>
 
 fn camera_bridge(config: &Ros1Config, args: CameraBridgeArgs) -> Result<(), Box<dyn Error>> {
     // SAFETY: This command initializes ROS before starting the camera bridge.
-    unsafe { ros1::init(config, true, ros1::MAX_MEDIA_MESSAGE_BYTES)? };
+    let connection = unsafe { ros1::init(config, true, ros1::MAX_MEDIA_MESSAGE_BYTES)? };
+    announce_connection(connection);
     let bridge = CameraBridge::start(&args.source_topic, &args.output_topic)?;
     println!(
         "Bridging {} -> {} as sensor_msgs/CompressedImage (Ctrl-C to stop)",
@@ -784,9 +826,125 @@ fn camera_bridge(config: &Ros1Config, args: CameraBridgeArgs) -> Result<(), Box<
     Ok(())
 }
 
+fn motor_connection_error() -> &'static str {
+    "the Scout motor controller did not connect, so no movement was sent. On Windows, allow moorebot-scout.exe through the firewall on Private networks; on every platform, verify that the Scout is fully started and this computer is still connected to its Wi-Fi"
+}
+
+fn announce_connection(connection: ConnectionInfo) {
+    println!(
+        "Connected to the Scout at {} (this computer: {}).",
+        connection.master_address, connection.advertise_address
+    );
+    match detect_scout(connection.master_address) {
+        Some(scout) => println!("Robot: {} ({})", scout.name, scout.mac_address),
+        None => println!("Robot: connected; its classroom name was not detected."),
+    }
+}
+
+fn detect_scout(master_address: std::net::SocketAddr) -> Option<KnownScout> {
+    #[cfg(windows)]
+    {
+        let netsh = windows_system_program("netsh.exe")?;
+        if let Some(scout) = command_output(&netsh, &["wlan", "show", "interfaces"])
+            .as_deref()
+            .and_then(known_scout_in_text)
+        {
+            return Some(scout);
+        }
+    }
+
+    let address = master_address.ip().to_string();
+    #[cfg(windows)]
+    let program = windows_system_program("arp.exe")?;
+    #[cfg(not(windows))]
+    let program = ["/usr/sbin/arp", "/sbin/arp", "/usr/bin/arp"]
+        .into_iter()
+        .map(Path::new)
+        .find(|path| path.is_file())?
+        .to_owned();
+    #[cfg(windows)]
+    let arguments = ["-a", address.as_str()];
+    #[cfg(not(windows))]
+    let arguments = ["-n", address.as_str()];
+    command_output(&program, &arguments)
+        .as_deref()
+        .and_then(known_scout_in_text)
+}
+
+#[cfg(windows)]
+fn windows_system_program(filename: &str) -> Option<PathBuf> {
+    use std::{ffi::OsString, os::windows::ffi::OsStringExt};
+    use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
+
+    if !matches!(filename, "netsh.exe" | "arp.exe") {
+        return None;
+    }
+    let mut buffer = [0_u16; 32_768];
+    // SAFETY: `buffer` is writable for the supplied element count. A zero
+    // result or a required length outside the buffer is rejected below.
+    let length = unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
+    if length == 0 || length >= buffer.len() {
+        return None;
+    }
+    let path = PathBuf::from(OsString::from_wide(&buffer[..length])).join(filename);
+    path.is_file().then_some(path)
+}
+
+fn command_output(program: &Path, arguments: &[&str]) -> Option<String> {
+    let mut child = ProcessCommand::new(program)
+        .args(arguments)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let stdout = child.stdout.take()?;
+    let reader = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout
+            .take(MAX_SYSTEM_COMMAND_OUTPUT_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map(|_| bytes)
+    });
+    let deadline = Instant::now() + SYSTEM_COMMAND_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
+            Ok(None) | Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+        }
+    }?;
+    let bytes = reader.join().ok()?.ok()?;
+    if !status.success() || bytes.len() as u64 > MAX_SYSTEM_COMMAND_OUTPUT_BYTES {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_subcommand_selects_student_teleop_defaults() {
+        let cli = Cli::try_parse_from(["moorebot-scout"]).unwrap();
+        assert!(cli.command.is_none());
+        let command = cli
+            .command
+            .unwrap_or_else(|| Command::Teleop(TeleopArgs::default()));
+        let Command::Teleop(args) = command else {
+            panic!("zero arguments must select teleop");
+        };
+        assert_eq!(args.speed, 0.10);
+        assert_eq!(args.strafe_speed, 0.10);
+        assert_eq!(args.turn_speed, 2.0);
+        assert_eq!(args.rate_hz, 40.0);
+        assert_eq!(args.camera_topic, topics::JPEG);
+    }
 
     #[test]
     fn motion_wait_does_not_extend_past_deadline() {
