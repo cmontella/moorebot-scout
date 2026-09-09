@@ -130,10 +130,12 @@ process-wide alias from that name to the already-reached ROS master's IP. Alias
 inputs are restricted to hostnames or IP addresses without schemes, ports,
 paths, credentials, queries, or fragments, and URI ports and paths are retained
 when the host is replaced. This does not broaden the trust boundary described
-above or modify system name resolution. Classroom-name discovery invokes only
-fixed operating-system commands without a shell, parses their output as an
-informational label, and never makes a safety or authorization decision from
-the result.
+above or modify system name resolution. Classroom-name discovery invokes fixed
+absolute operating-system commands without a shell, retains at most 64 KiB of
+their standard output, parses it as an informational label, and never makes a
+safety or authorization decision from the result. On Windows, the system
+directory is obtained through the operating-system API instead of a mutable
+environment variable or executable search path.
 
 The first-party README describes the light reading as a packed 32-bit quantity:
 CH0 occupies the upper 16 bits and CH1 the lower 16 bits. The driver preserves

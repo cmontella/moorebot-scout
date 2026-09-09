@@ -30,7 +30,14 @@ include = [
 
 [features]
 default = ["ros1"]
-ros1 = ["dep:clap", "dep:crossterm", "dep:ctrlc", "dep:env_logger", "dep:rosrust"]
+ros1 = [
+  "dep:clap",
+  "dep:crossterm",
+  "dep:ctrlc",
+  "dep:env_logger",
+  "dep:rosrust",
+  "dep:windows-sys",
+]
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"], optional = true }
@@ -38,6 +45,9 @@ crossterm = { version = "0.29", optional = true }
 ctrlc = { version = "3.5", optional = true }
 env_logger = { version = "0.11", optional = true }
 rosrust = { git = "https://github.com/cmontella/rosrust", rev = "965c6982ba8151db819c83f2e585eee8128247f7", version = "0.9.12", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_System_SystemInformation"], optional = true }
 
 [[bin]]
 name = "moorebot-scout"

@@ -21,9 +21,9 @@ use moorebot_scout::{
 use std::{
     error::Error,
     fs::{self, OpenOptions},
-    io::{self, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
-    process::Command as ProcessCommand,
+    process::{Command as ProcessCommand, Stdio},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -36,6 +36,7 @@ const TELEOP_INITIAL_REPEAT_GRACE: Duration = Duration::from_millis(1_100);
 const TELEOP_REPEAT_DEADMAN: Duration = Duration::from_millis(350);
 const SPEED_SCALE_STEP: f64 = 0.25;
 const MIN_SPEED_SCALE: f64 = 0.25;
+const MAX_SYSTEM_COMMAND_OUTPUT_BYTES: u64 = 64 * 1024;
 const TELEOP_HELP: &str = "Controls:\n  W / S       forward / backward\n  A / D       strafe left / right\n  Q / E       turn left / right\n  Up / Down   increase / decrease speed and control rate\n  Space       save the latest camera frame to the Desktop\n  Esc/Ctrl-C  stop and exit";
 
 #[derive(Parser)]
@@ -841,28 +842,74 @@ fn announce_connection(connection: ConnectionInfo) {
 
 fn detect_scout(master_address: std::net::SocketAddr) -> Option<KnownScout> {
     #[cfg(windows)]
-    if let Some(scout) = command_output("netsh", &["wlan", "show", "interfaces"])
-        .as_deref()
-        .and_then(known_scout_in_text)
     {
-        return Some(scout);
+        let netsh = windows_system_program("netsh.exe")?;
+        if let Some(scout) = command_output(&netsh, &["wlan", "show", "interfaces"])
+            .as_deref()
+            .and_then(known_scout_in_text)
+        {
+            return Some(scout);
+        }
     }
 
     let address = master_address.ip().to_string();
     #[cfg(windows)]
+    let program = windows_system_program("arp.exe")?;
+    #[cfg(not(windows))]
+    let program = ["/usr/sbin/arp", "/sbin/arp", "/usr/bin/arp"]
+        .into_iter()
+        .map(Path::new)
+        .find(|path| path.is_file())?
+        .to_owned();
+    #[cfg(windows)]
     let arguments = ["-a", address.as_str()];
     #[cfg(not(windows))]
     let arguments = ["-n", address.as_str()];
-    command_output("arp", &arguments)
+    command_output(&program, &arguments)
         .as_deref()
         .and_then(known_scout_in_text)
 }
 
-fn command_output(program: &str, arguments: &[&str]) -> Option<String> {
-    let output = ProcessCommand::new(program).args(arguments).output().ok()?;
-    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
-    text.push_str(&String::from_utf8_lossy(&output.stderr));
-    Some(text)
+#[cfg(windows)]
+fn windows_system_program(filename: &str) -> Option<PathBuf> {
+    use std::{ffi::OsString, os::windows::ffi::OsStringExt};
+    use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
+
+    if !matches!(filename, "netsh.exe" | "arp.exe") {
+        return None;
+    }
+    let mut buffer = [0_u16; 32_768];
+    // SAFETY: `buffer` is writable for the supplied element count. A zero
+    // result or a required length outside the buffer is rejected below.
+    let length = unsafe { GetSystemDirectoryW(buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
+    if length == 0 || length >= buffer.len() {
+        return None;
+    }
+    let path = PathBuf::from(OsString::from_wide(&buffer[..length])).join(filename);
+    path.is_file().then_some(path)
+}
+
+fn command_output(program: &Path, arguments: &[&str]) -> Option<String> {
+    let mut child = ProcessCommand::new(program)
+        .args(arguments)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut bytes = Vec::new();
+    child
+        .stdout
+        .take()?
+        .take(MAX_SYSTEM_COMMAND_OUTPUT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > MAX_SYSTEM_COMMAND_OUTPUT_BYTES {
+        let _ = child.kill();
+        bytes.truncate(MAX_SYSTEM_COMMAND_OUTPUT_BYTES as usize);
+    }
+    let _ = child.wait();
+    Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 #[cfg(test)]

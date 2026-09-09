@@ -1125,6 +1125,7 @@ dependencies = [
  "ctrlc",
  "env_logger",
  "rosrust",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
