@@ -1,5 +1,14 @@
 use clap::{Args, Parser, Subcommand};
+use crossterm::{
+    event::{
+        self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
+        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    },
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement},
+};
 use moorebot_scout::{
+    frame::{ScoutFrame, StreamType},
     motion::{MotionLimits, ScoutTwist, Velocity},
     ros1::{
         self, CameraBridge, MAX_BATTERY_MESSAGE_BYTES, MAX_SENSOR_MESSAGE_BYTES, Ros1Config,
@@ -10,13 +19,22 @@ use moorebot_scout::{
 };
 use std::{
     error::Error,
+    fs::{self, OpenOptions},
+    io::{self, Write},
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+
+const TELEOP_INITIAL_REPEAT_GRACE: Duration = Duration::from_millis(1_100);
+const TELEOP_REPEAT_DEADMAN: Duration = Duration::from_millis(350);
+const SPEED_SCALE_STEP: f64 = 0.25;
+const MIN_SPEED_SCALE: f64 = 0.25;
+const TELEOP_HELP: &str = "Controls:\n  W / S       forward / backward\n  A / D       strafe left / right\n  Q / E       turn left / right\n  Up / Down   increase / decrease speed and control rate\n  Space       save the latest camera frame to the Desktop\n  Esc/Ctrl-C  stop and exit";
 
 #[derive(Parser)]
 #[command(version, about = "Rust driver tools for the Moorebot Scout")]
@@ -25,7 +43,7 @@ struct Cli {
     #[arg(long, global = true, default_value = "http://10.42.0.1:11311")]
     master: String,
 
-    /// Address on this computer that the Scout can reach.
+    /// Override the local address automatically selected for the Scout route.
     #[arg(long, global = true)]
     advertise_address: Option<String>,
 
@@ -39,6 +57,8 @@ enum Command {
     Discover,
     /// Send a bounded velocity command, followed by an unconditional stop.
     Drive(DriveArgs),
+    /// Drive with WASD and save the latest camera picture with Space.
+    Teleop(TeleopArgs),
     /// Print decoded IMU, range, light, and battery samples.
     Monitor(MonitorArgs),
     /// Convert `/CoreNode/jpg` into standard `sensor_msgs/CompressedImage`.
@@ -65,9 +85,32 @@ struct DriveArgs {
 }
 
 #[derive(Args)]
+#[command(after_help = TELEOP_HELP)]
+struct TeleopArgs {
+    /// Forward and reverse speed in meters per second.
+    #[arg(long, default_value_t = 0.10)]
+    speed: f64,
+    /// Left/right strafe speed in meters per second.
+    #[arg(long, default_value_t = 0.10)]
+    strafe_speed: f64,
+    /// Rotation speed in radians per second.
+    #[arg(long, default_value_t = 2.0)]
+    turn_speed: f64,
+    /// Base velocity publication frequency; Up/Down adjusts it with speed.
+    #[arg(long, default_value_t = 40.0)]
+    rate_hz: f64,
+    /// Directory in which Space saves JPEG pictures; defaults to the Desktop.
+    #[arg(long, visible_alias = "screenshot-dir")]
+    picture_directory: Option<PathBuf>,
+    /// Scout JPEG camera topic.
+    #[arg(long, default_value = topics::JPEG)]
+    camera_topic: String,
+}
+
+#[derive(Args)]
 struct MonitorArgs {
     /// Stop after this many seconds; use zero to run until Ctrl-C.
-    #[arg(long, default_value_t = 10)]
+    #[arg(long, default_value_t = 0)]
     seconds: u64,
 }
 
@@ -102,6 +145,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
         node_name: match &cli.command {
             Command::Discover => "moorebot_scout_discover",
             Command::Drive(_) => "moorebot_scout_drive",
+            Command::Teleop(_) => "moorebot_scout_teleop",
             Command::Monitor(_) => "moorebot_scout_monitor",
             Command::CameraBridge(_) => "moorebot_scout_camera_bridge",
         }
@@ -111,6 +155,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
     match cli.command {
         Command::Discover => discover(&config),
         Command::Drive(args) => drive(&config, args),
+        Command::Teleop(args) => teleop(&config, args),
         Command::Monitor(args) => monitor(&config, args),
         Command::CameraBridge(args) => camera_bridge(&config, args),
     }
@@ -172,6 +217,12 @@ fn drive(config: &Ros1Config, args: DriveArgs) -> Result<(), Box<dyn Error>> {
     if !args.rate_hz.is_finite() || !(1.0..=100.0).contains(&args.rate_hz) {
         return Err("--rate-hz must be finite and between 1 and 100".into());
     }
+    if args.forward == 0.0 && args.lateral == 0.0 && args.yaw == 0.0 {
+        return Err(
+            "drive needs movement: use --forward, --lateral, or --yaw (for example: moorebot-scout drive --forward 0.1)"
+                .into(),
+        );
+    }
 
     let command = Velocity {
         forward_mps: args.forward,
@@ -228,6 +279,386 @@ fn drive(config: &Ros1Config, args: DriveArgs) -> Result<(), Box<dyn Error>> {
     stop_result?;
     println!("Stop command sent.");
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TeleopAction {
+    None,
+    Capture,
+    Faster,
+    Slower,
+    Exit,
+}
+
+#[derive(Default)]
+struct TeleopControl {
+    forward_until: Option<Instant>,
+    reverse_until: Option<Instant>,
+    strafe_left_until: Option<Instant>,
+    strafe_right_until: Option<Instant>,
+    turn_left_until: Option<Instant>,
+    turn_right_until: Option<Instant>,
+}
+
+impl TeleopControl {
+    fn handle_key(&mut self, key: KeyEvent, now: Instant) -> TeleopAction {
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && matches!(key.code, KeyCode::Char('c' | 'C'))
+        {
+            return TeleopAction::Exit;
+        }
+
+        if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+            match key.code {
+                KeyCode::Esc => return TeleopAction::Exit,
+                KeyCode::Char(' ') if key.kind == KeyEventKind::Press => {
+                    return TeleopAction::Capture;
+                }
+                KeyCode::Up if key.kind == KeyEventKind::Press => {
+                    return TeleopAction::Faster;
+                }
+                KeyCode::Down if key.kind == KeyEventKind::Press => {
+                    return TeleopAction::Slower;
+                }
+                KeyCode::Char(character) => match character.to_ascii_lowercase() {
+                    'w' => Self::refresh(&mut self.forward_until, key.kind, now),
+                    's' => Self::refresh(&mut self.reverse_until, key.kind, now),
+                    'a' => Self::refresh(&mut self.strafe_left_until, key.kind, now),
+                    'd' => Self::refresh(&mut self.strafe_right_until, key.kind, now),
+                    'q' => Self::refresh(&mut self.turn_left_until, key.kind, now),
+                    'e' => Self::refresh(&mut self.turn_right_until, key.kind, now),
+                    _ => {}
+                },
+                _ => {}
+            }
+        } else if key.kind == KeyEventKind::Release {
+            match key.code {
+                KeyCode::Char('w' | 'W') => self.forward_until = None,
+                KeyCode::Char('s' | 'S') => self.reverse_until = None,
+                KeyCode::Char('a' | 'A') => self.strafe_left_until = None,
+                KeyCode::Char('d' | 'D') => self.strafe_right_until = None,
+                KeyCode::Char('q' | 'Q') => self.turn_left_until = None,
+                KeyCode::Char('e' | 'E') => self.turn_right_until = None,
+                _ => {}
+            }
+        }
+
+        TeleopAction::None
+    }
+
+    fn refresh(deadline: &mut Option<Instant>, kind: KeyEventKind, now: Instant) {
+        // Legacy terminals report every auto-repeat as another Press. Treat a
+        // Press received while this key is still active as a repeat, while the
+        // first Press gets enough grace for normal desktop repeat delays.
+        let is_repeat = kind == KeyEventKind::Repeat
+            || deadline.is_some_and(|current_deadline| current_deadline > now);
+        let timeout = if is_repeat {
+            TELEOP_REPEAT_DEADMAN
+        } else {
+            TELEOP_INITIAL_REPEAT_GRACE
+        };
+        *deadline = Some(now + timeout);
+    }
+
+    fn velocity(
+        &mut self,
+        now: Instant,
+        speed: f64,
+        strafe_speed: f64,
+        turn_speed: f64,
+        speed_scale: f64,
+    ) -> Velocity {
+        let forward = Self::active(&mut self.forward_until, now) as i8
+            - Self::active(&mut self.reverse_until, now) as i8;
+        let strafe = Self::active(&mut self.strafe_left_until, now) as i8
+            - Self::active(&mut self.strafe_right_until, now) as i8;
+        let turn = Self::active(&mut self.turn_left_until, now) as i8
+            - Self::active(&mut self.turn_right_until, now) as i8;
+
+        Velocity {
+            forward_mps: f64::from(forward) * speed * speed_scale,
+            lateral_mps: f64::from(strafe) * strafe_speed * speed_scale,
+            yaw_rps: f64::from(turn) * turn_speed * speed_scale,
+        }
+    }
+
+    fn active(deadline: &mut Option<Instant>, now: Instant) -> bool {
+        if deadline.is_some_and(|deadline| deadline > now) {
+            true
+        } else {
+            *deadline = None;
+            false
+        }
+    }
+
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
+
+fn maximum_speed_scale(args: &TeleopArgs, limits: MotionLimits) -> f64 {
+    [
+        limits.max_forward_mps / args.speed,
+        limits.max_lateral_mps / args.strafe_speed,
+        limits.max_yaw_rps / args.turn_speed,
+        100.0 / args.rate_hz,
+    ]
+    .into_iter()
+    .fold(f64::INFINITY, f64::min)
+    .max(MIN_SPEED_SCALE)
+}
+
+fn adjusted_speed_scale(current: f64, increase: bool, maximum: f64) -> f64 {
+    let change = if increase {
+        SPEED_SCALE_STEP
+    } else {
+        -SPEED_SCALE_STEP
+    };
+    (current + change).clamp(MIN_SPEED_SCALE, maximum)
+}
+
+struct RawTerminal {
+    keyboard_enhancements: bool,
+}
+
+impl RawTerminal {
+    fn enter() -> io::Result<Self> {
+        enable_raw_mode()?;
+        let keyboard_enhancements = supports_keyboard_enhancement().unwrap_or(false);
+        if keyboard_enhancements
+            && let Err(error) = execute!(
+                io::stdout(),
+                PushKeyboardEnhancementFlags(
+                    KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                        | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                )
+            )
+        {
+            let _ = disable_raw_mode();
+            return Err(error);
+        }
+
+        Ok(Self {
+            keyboard_enhancements,
+        })
+    }
+}
+
+impl Drop for RawTerminal {
+    fn drop(&mut self) {
+        if self.keyboard_enhancements {
+            let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
+        }
+        let _ = disable_raw_mode();
+    }
+}
+
+fn validate_teleop_speed(name: &str, value: f64, maximum: f64) -> Result<(), Box<dyn Error>> {
+    if !value.is_finite() || value <= 0.0 || value > maximum {
+        return Err(format!(
+            "{name} must be finite, greater than zero, and no more than {maximum}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn save_latest_picture(
+    latest_frame: &Mutex<Option<ScoutFrame>>,
+    directory: &Path,
+) -> Result<Option<PathBuf>, Box<dyn Error>> {
+    let frame = latest_frame
+        .lock()
+        .map_err(|_| "camera frame storage was poisoned")?;
+    let Some(frame) = frame.as_ref() else {
+        return Ok(None);
+    };
+
+    let timestamp_ms = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();
+    for suffix in 0..100_u8 {
+        let suffix = if suffix == 0 {
+            String::new()
+        } else {
+            format!("-{suffix}")
+        };
+        let path = directory.join(format!(
+            "scout-{timestamp_ms}-frame-{}{}.jpg",
+            frame.sequence, suffix
+        ));
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => {
+                file.write_all(&frame.data)?;
+                return Ok(Some(path));
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+
+    Err("could not choose a unique picture filename".into())
+}
+
+fn run_teleop_session(
+    publisher: &TwistPublisher,
+    latest_frame: &Mutex<Option<ScoutFrame>>,
+    running: &AtomicBool,
+    args: &TeleopArgs,
+    picture_directory: &Path,
+) -> Result<(), Box<dyn Error>> {
+    let _terminal = RawTerminal::enter()?;
+    let mut control = TeleopControl::default();
+    let mut next_publish = Instant::now();
+    let maximum_scale = maximum_speed_scale(args, MotionLimits::default());
+    let mut speed_scale = 1.0_f64.min(maximum_scale);
+
+    publisher.send(ScoutTwist::zero())?;
+    while running.load(Ordering::SeqCst) && rosrust::is_ok() {
+        let now = Instant::now();
+        let period = Duration::from_secs_f64(1.0 / (args.rate_hz * speed_scale));
+        let wait = next_publish
+            .checked_duration_since(now)
+            .unwrap_or(Duration::ZERO)
+            .min(period);
+
+        if event::poll(wait)?
+            && let Event::Key(key) = event::read()?
+        {
+            match control.handle_key(key, Instant::now()) {
+                TeleopAction::None => {}
+                TeleopAction::Exit => break,
+                TeleopAction::Capture => {
+                    // Stop before touching the disk so a slow or failed write
+                    // cannot leave the previous motion command active.
+                    control.clear();
+                    publisher.send(ScoutTwist::zero())?;
+                    match save_latest_picture(latest_frame, picture_directory)? {
+                        Some(path) => println!("\r\nSaved {}", path.display()),
+                        None => println!("\r\nNo JPEG camera frame has arrived yet."),
+                    }
+                    next_publish = Instant::now() + period;
+                }
+                action @ (TeleopAction::Faster | TeleopAction::Slower) => {
+                    speed_scale = adjusted_speed_scale(
+                        speed_scale,
+                        matches!(action, TeleopAction::Faster),
+                        maximum_scale,
+                    );
+                    println!(
+                        "\r\nSpeed: {:.0}% | control rate: {:.0} Hz",
+                        speed_scale * 100.0,
+                        args.rate_hz * speed_scale
+                    );
+                    io::stdout().flush()?;
+                    next_publish = Instant::now();
+                }
+            }
+        }
+
+        let now = Instant::now();
+        if now >= next_publish {
+            let command = control
+                .velocity(
+                    now,
+                    args.speed,
+                    args.strafe_speed,
+                    args.turn_speed,
+                    speed_scale,
+                )
+                .to_scout_twist(MotionLimits::default())?;
+            publisher.send(command)?;
+            next_publish = now + Duration::from_secs_f64(1.0 / (args.rate_hz * speed_scale));
+        }
+    }
+
+    Ok(())
+}
+
+fn teleop(config: &Ros1Config, args: TeleopArgs) -> Result<(), Box<dyn Error>> {
+    let limits = MotionLimits::default();
+    validate_teleop_speed("--speed", args.speed, limits.max_forward_mps)?;
+    validate_teleop_speed("--strafe-speed", args.strafe_speed, limits.max_lateral_mps)?;
+    validate_teleop_speed("--turn-speed", args.turn_speed, limits.max_yaw_rps)?;
+    if !args.rate_hz.is_finite() || !(1.0..=100.0).contains(&args.rate_hz) {
+        return Err("--rate-hz must be finite and between 1 and 100".into());
+    }
+    let picture_directory = args
+        .picture_directory
+        .clone()
+        .unwrap_or_else(default_picture_directory);
+    fs::create_dir_all(&picture_directory)?;
+
+    // SAFETY: This command initializes ROS before starting any ROS-owned
+    // publishers, subscriptions, signal handlers, or worker threads.
+    unsafe { ros1::init(config, false, ros1::MAX_MEDIA_MESSAGE_BYTES)? };
+    let running = Arc::new(AtomicBool::new(true));
+    let signal_running = Arc::clone(&running);
+    ctrlc::set_handler(move || signal_running.store(false, Ordering::SeqCst))?;
+
+    let latest_frame = Arc::new(Mutex::new(None));
+    let callback_frame = Arc::clone(&latest_frame);
+    let camera_subscription = ros1::subscribe_raw::<{ ros1::MAX_MEDIA_MESSAGE_BYTES }, _>(
+        &args.camera_topic,
+        1,
+        move |bytes| {
+            let Ok(frame) = ScoutFrame::decode_ros(&bytes) else {
+                return;
+            };
+            if frame.stream_type != StreamType::Jpeg || !frame.has_jpeg_markers() {
+                return;
+            }
+            if let Ok(mut current) = callback_frame.lock() {
+                *current = Some(frame);
+            }
+        },
+    )?;
+    let publisher = TwistPublisher::new(topics::CMD_VEL, 2)?;
+    if !publisher.wait_for_a_subscriber(Duration::from_secs(3)) {
+        drop(camera_subscription);
+        rosrust::shutdown();
+        return Err("no subscriber connected to /cmd_vel; refusing to send motion".into());
+    }
+
+    println!("Connected to the Scout at {}.", config.master_uri);
+    println!("{TELEOP_HELP}");
+    let initial_scale = 1.0_f64.min(maximum_speed_scale(&args, limits));
+    println!(
+        "Pictures: {} | Speed: {:.0}% | control rate: {:.0} Hz\nKeep this terminal focused.",
+        picture_directory.display(),
+        initial_scale * 100.0,
+        args.rate_hz * initial_scale
+    );
+
+    let session_result = run_teleop_session(
+        &publisher,
+        &latest_frame,
+        &running,
+        &args,
+        &picture_directory,
+    );
+    let stop_result = publisher.send(ScoutTwist::zero());
+    thread::sleep(Duration::from_millis(100));
+    drop(camera_subscription);
+    rosrust::shutdown();
+
+    session_result?;
+    stop_result?;
+    println!("Stop command sent.");
+    Ok(())
+}
+
+fn default_picture_directory() -> PathBuf {
+    std::env::var_os("USERPROFILE")
+        .map(PathBuf::from)
+        .map(|profile| profile.join("Desktop"))
+        .filter(|desktop| desktop.is_dir())
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .map(|home| home.join("Desktop"))
+        })
+        .filter(|desktop| desktop.is_dir())
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 fn monitor(config: &Ros1Config, args: MonitorArgs) -> Result<(), Box<dyn Error>> {
@@ -374,5 +805,175 @@ mod tests {
             next_motion_wait(Duration::from_secs(1), deadline, deadline),
             None
         );
+    }
+
+    #[test]
+    fn teleop_keys_move_release_and_expire() {
+        let now = Instant::now();
+        let mut control = TeleopControl::default();
+
+        assert_eq!(
+            control.handle_key(
+                KeyEvent::new_with_kind(
+                    KeyCode::Char('w'),
+                    KeyModifiers::NONE,
+                    KeyEventKind::Press
+                ),
+                now,
+            ),
+            TeleopAction::None
+        );
+        assert_eq!(control.velocity(now, 0.08, 0.1, 2.0, 1.0).forward_mps, 0.08);
+
+        control.handle_key(
+            KeyEvent::new_with_kind(
+                KeyCode::Char('w'),
+                KeyModifiers::NONE,
+                KeyEventKind::Release,
+            ),
+            now,
+        );
+        assert_eq!(
+            control.velocity(now, 0.08, 0.1, 2.0, 1.0),
+            Velocity::default()
+        );
+
+        control.handle_key(
+            KeyEvent::new_with_kind(KeyCode::Char('a'), KeyModifiers::NONE, KeyEventKind::Press),
+            now,
+        );
+        assert_eq!(control.velocity(now, 0.08, 0.1, 2.0, 1.0).lateral_mps, 0.1);
+        assert_eq!(control.velocity(now, 0.08, 0.1, 2.0, 1.0).yaw_rps, 0.0);
+        assert_eq!(
+            control
+                .velocity(now + Duration::from_millis(500), 0.08, 0.1, 2.0, 1.0)
+                .lateral_mps,
+            0.1
+        );
+        assert_eq!(
+            control.velocity(now + TELEOP_INITIAL_REPEAT_GRACE, 0.08, 0.1, 2.0, 1.0,),
+            Velocity::default()
+        );
+
+        control.handle_key(
+            KeyEvent::new_with_kind(KeyCode::Char('q'), KeyModifiers::NONE, KeyEventKind::Press),
+            now,
+        );
+        assert_eq!(control.velocity(now, 0.08, 0.1, 2.0, 1.0).yaw_rps, 2.0);
+    }
+
+    #[test]
+    fn teleop_repeat_switches_to_the_short_deadman() {
+        let now = Instant::now();
+        let mut control = TeleopControl::default();
+        let press =
+            KeyEvent::new_with_kind(KeyCode::Char('w'), KeyModifiers::NONE, KeyEventKind::Press);
+
+        control.handle_key(press, now);
+        let repeated_at = now + Duration::from_millis(500);
+        // This covers legacy terminals, which report repeats as Press rather
+        // than KeyEventKind::Repeat.
+        control.handle_key(press, repeated_at);
+        assert_eq!(
+            control.velocity(repeated_at + TELEOP_REPEAT_DEADMAN, 0.08, 0.1, 2.0, 1.0,),
+            Velocity::default()
+        );
+    }
+
+    #[test]
+    fn teleop_space_captures_once_and_escape_exits() {
+        let now = Instant::now();
+        let mut control = TeleopControl::default();
+
+        assert_eq!(
+            control.handle_key(
+                KeyEvent::new_with_kind(
+                    KeyCode::Char(' '),
+                    KeyModifiers::NONE,
+                    KeyEventKind::Press
+                ),
+                now,
+            ),
+            TeleopAction::Capture
+        );
+        assert_eq!(
+            control.handle_key(
+                KeyEvent::new_with_kind(
+                    KeyCode::Char(' '),
+                    KeyModifiers::NONE,
+                    KeyEventKind::Repeat,
+                ),
+                now,
+            ),
+            TeleopAction::None
+        );
+        assert_eq!(
+            control.handle_key(
+                KeyEvent::new_with_kind(KeyCode::Esc, KeyModifiers::NONE, KeyEventKind::Press),
+                now,
+            ),
+            TeleopAction::Exit
+        );
+
+        assert_eq!(
+            control.handle_key(
+                KeyEvent::new_with_kind(KeyCode::Up, KeyModifiers::NONE, KeyEventKind::Press),
+                now,
+            ),
+            TeleopAction::Faster
+        );
+        assert_eq!(
+            control.handle_key(
+                KeyEvent::new_with_kind(KeyCode::Down, KeyModifiers::NONE, KeyEventKind::Press),
+                now,
+            ),
+            TeleopAction::Slower
+        );
+    }
+
+    #[test]
+    fn teleop_speed_adjustment_is_bounded() {
+        assert_eq!(adjusted_speed_scale(1.0, true, 2.0), 1.25);
+        assert_eq!(adjusted_speed_scale(2.0, true, 2.0), 2.0);
+        assert_eq!(adjusted_speed_scale(0.25, false, 2.0), 0.25);
+    }
+
+    #[test]
+    fn picture_capture_writes_the_validated_jpeg_without_overwriting() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "moorebot-scout-picture-test-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let latest = Mutex::new(Some(ScoutFrame {
+            sequence: 42,
+            timestamp_ms: 1,
+            session: 2,
+            stream_type: StreamType::Jpeg,
+            original_sequence: 42,
+            parameters: [640, 480, 0, 0],
+            data: vec![0xff, 0xd8, 1, 2, 3, 0xff, 0xd9],
+        }));
+
+        let first = save_latest_picture(&latest, &directory)
+            .unwrap()
+            .expect("picture should be available");
+        let second = save_latest_picture(&latest, &directory)
+            .unwrap()
+            .expect("picture should be available");
+        assert_ne!(first, second);
+        assert_eq!(fs::read(&first).unwrap(), [0xff, 0xd8, 1, 2, 3, 0xff, 0xd9]);
+        assert_eq!(
+            fs::read(&second).unwrap(),
+            [0xff, 0xd8, 1, 2, 3, 0xff, 0xd9]
+        );
+
+        fs::remove_file(first).unwrap();
+        fs::remove_file(second).unwrap();
+        fs::remove_dir(directory).unwrap();
     }
 }

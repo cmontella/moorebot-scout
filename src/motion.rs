@@ -70,7 +70,7 @@ impl ScoutTwist {
 
 impl Velocity {
     /// Clamp a standard velocity command and map it to the Scout's swapped
-    /// linear axes (`linear.y` is forward and `linear.x` is lateral).
+    /// linear axes (`linear.y` is forward and Scout `linear.x` points right).
     pub fn to_scout_twist(self, limits: MotionLimits) -> Result<ScoutTwist, MotionError> {
         validate_finite("forward velocity", self.forward_mps)?;
         validate_finite("lateral velocity", self.lateral_mps)?;
@@ -80,7 +80,7 @@ impl Velocity {
         validate_limit("yaw limit", limits.max_yaw_rps)?;
 
         Ok(ScoutTwist {
-            linear_x: self
+            linear_x: -self
                 .lateral_mps
                 .clamp(-limits.max_lateral_mps, limits.max_lateral_mps),
             linear_y: self

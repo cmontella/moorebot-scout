@@ -37,16 +37,16 @@ The optional default `ros1` feature pins a Moorebot-specific `rosrust` fork at
 an exact Git revision. The fork checks the outer TCPROS length before allocating
 the body and caps connection headers at 64 KiB. Before starting ROS, each CLI
 command also selects a process-wide body ceiling: 8 KiB for discovery, motion,
-and sensor monitoring, or 16 MiB + 1 KiB for the camera bridge. The transport's
+and sensor monitoring, or 16 MiB + 1 KiB for camera commands. The transport's
 fixed staging queue is therefore bounded by both message count and bytes.
 The change has been submitted upstream as [`rosrust` PR
 #221](https://github.com/adnanademovic/rosrust/pull/221).
 
 Cargo substitutes crates.io versions for Git dependencies when it verifies a
 publishable archive. Because crates.io's `rosrust` does not yet contain these
-limits, `Cargo.toml` sets `publish = false`. A real release remains blocked by
-issue #9; publishing must be re-enabled and full package verification restored
-only after the bounded transport comes from a publishable dependency.
+limits, `Cargo.toml` sets `publish = false`. A crates.io release remains blocked
+by issue #9; publishing must be re-enabled and full package verification
+restored only after the bounded transport comes from a publishable dependency.
 
 A RustSec scan of the current lockfile also reports four vulnerabilities in the
 old HTTP/XML-RPC dependency chain used by `rosrust`: RUSTSEC-2020-0071,

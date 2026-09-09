@@ -139,7 +139,7 @@ fn maps_standard_axes_to_scout_axes_and_clamps() {
     .to_scout_twist(MotionLimits::default())
     .unwrap();
 
-    assert_eq!(twist.linear_x, -0.2);
+    assert_eq!(twist.linear_x, 0.2);
     assert_eq!(twist.linear_y, 0.47);
     assert_eq!(twist.angular_z, 2.9);
     assert_eq!(twist.encode_ros().len(), 48);

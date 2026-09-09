@@ -1,9 +1,8 @@
 # Student getting-started guide
 
-This guide assumes you are new to both Rust and ROS. By the end, you will have
-built and tested the driver, connected it to a Moorebot Scout, inspected the
-robot's interfaces, and optionally read sensors, viewed the camera, or sent one
-short motion command.
+This guide assumes you are new to robots and ROS. By the end, you will have
+downloaded one program, connected it to a Moorebot Scout, driven with WASD,
+saved camera pictures with Space, and optionally inspected the robot's sensors.
 
 ## What is the Moorebot Scout?
 
@@ -17,12 +16,12 @@ the [official product overview](https://www.moorebot.com/products/moorebot-scout
 and [official open-source control
 repository](https://github.com/Pilot-Labs-Dev/Scout-open-source).
 
-This project replaces the difficult Python/MATLAB computer setup with one Rust
-program. The first version can inspect the robot, read several sensors, bridge
-the color camera into a standard ROS message, and send short bounded movement
-commands. Other capabilities found in the Scout source—such as night mode,
-patrols, docking, recording, audio, and onboard detections—are listed for future
-work but are not yet exposed as working commands.
+This project replaces the difficult Python/MATLAB computer setup with one
+program. The first version can drive the robot from the keyboard, save color
+camera pictures, inspect the robot, read several sensors, and bridge the camera
+into a standard ROS message. Other capabilities found in the Scout source—such
+as night mode, patrols, docking, recording, audio, and onboard detections—are
+listed for future work but are not yet exposed as working commands.
 
 The driver talks to ROS 1 already running on the Scout. You do **not** need to
 install ROS, Python, MATLAB, or custom Moorebot message packages to build it or
@@ -60,9 +59,10 @@ flowchart LR
 
 The Rust driver does **not** run commands through SSH. It first asks the ROS
 master where topics live, and then ROS nodes open direct TCPROS connections to
-exchange messages. That is why the command needs both the robot's master
-address and your computer's advertised address. SSH is a separate, optional
-way to open a Linux terminal on the robot for diagnostics.
+exchange messages. The program automatically asks the operating system which
+local address reaches the robot and advertises it for those return connections.
+SSH is a separate, optional way to open a Linux terminal on the robot for
+diagnostics.
 
 ## Safety first
 
@@ -94,31 +94,50 @@ the robot is commonly `10.42.0.1`; your computer will normally have another
 `10.42.0.x` address. Never advertise `127.0.0.1`, because that means "this same
 machine" to whichever computer reads it.
 
-## 1. Install the development tools
+## 1. Download the program
 
-Install these tools on your computer:
+Open the project's [GitHub Releases
+page](https://github.com/cmontella/moorebot-scout/releases) and download the
+newest package for your computer:
 
-1. [Git](https://git-scm.com/downloads), used to download the project.
-2. [Rust through rustup](https://rustup.rs/), which installs the Rust compiler
-   and Cargo build tool.
+| Computer | Package name |
+|---|---|
+| Apple Silicon Mac (M1, M2, M3, and newer) | `moorebot-scout-aarch64-apple-darwin.tar.gz` |
+| Intel Mac | `moorebot-scout-x86_64-apple-darwin.tar.gz` |
+| 64-bit Windows | `moorebot-scout-x86_64-pc-windows-msvc.zip` |
 
-Open PowerShell on Windows or Terminal on macOS/Linux and verify the installs:
+Extract the downloaded package. It contains just `moorebot-scout` on a Mac or
+`moorebot-scout.exe` on Windows. You do not need to install Rust, ROS, Git,
+Python, or MATLAB. Windows users can also download the standalone
+`moorebot-scout.exe` release asset directly instead of the ZIP.
+
+These early releases are not yet code-signed. Windows SmartScreen or macOS
+Gatekeeper may therefore ask you to confirm that you trust the download. Only
+continue if it came from the `cmontella/moorebot-scout` release page. On macOS,
+use **System Settings → Privacy & Security → Open Anyway** if Gatekeeper blocks
+it; do not globally disable Gatekeeper. On Windows, inspect the publisher
+warning before choosing **More info → Run anyway**. The release also provides
+`SHA256SUMS` if an instructor wants to verify the download.
+
+Open Terminal on macOS or PowerShell on Windows, change into the extracted
+folder, and check the program:
 
 ```text
-git --version
-rustc --version
-cargo --version
+# macOS
+chmod +x ./moorebot-scout
+./moorebot-scout --help
+
+# Windows PowerShell
+./moorebot-scout.exe --help
 ```
 
-Each command should print a version. If `rustc` is older than 1.98, update it:
+The examples below show the macOS spelling. On Windows, replace
+`./moorebot-scout` with `./moorebot-scout.exe`.
 
-```text
-rustup update stable
-```
+### Optional: build the same program from source
 
-## 2. Download, build, and test the driver
-
-These commands are the same in PowerShell and in a macOS/Linux terminal:
+Developers who want to change the driver can install [Git](https://git-scm.com/downloads)
+and [Rust](https://rustup.rs/), then run:
 
 ```text
 git clone https://github.com/cmontella/moorebot-scout.git
@@ -127,26 +146,11 @@ cargo build --release
 cargo test --all-targets
 ```
 
-The first build downloads Rust packages and can take several minutes. A
-successful test run ends with lines containing `test result: ok`. Compiler
-warnings about future incompatibility in `buf_redux` or `multipart` come from
-upstream ROS dependencies and do not indicate a failed build.
+The built program is `target/release/moorebot-scout` on macOS/Linux or
+`target/release/moorebot-scout.exe` on Windows. The rest of this guide assumes
+the program has been copied into the current folder.
 
-Before connecting a robot, try the offline examples:
-
-```text
-cargo run --example motion_mapping --no-default-features
-cargo run --example list_known_interfaces --no-default-features
-```
-
-You can also inspect every command and option:
-
-```text
-cargo run -- --help
-cargo run -- drive --help
-```
-
-## 3. Join the Scout network
+## 2. Join the Scout network
 
 1. Power on the Scout.
 2. Connect your computer to the Wi-Fi network created by the Scout. The
@@ -156,16 +160,16 @@ cargo run -- drive --help
    to change this default after the first login. A Scout already configured in
    access-point mode may instead be on the same trusted local network as your
    computer.
-3. Find the computer's address on that network.
+3. Confirm the computer received an address on that network.
 
 On Windows, run `ipconfig` and find the `IPv4 Address` under the active Wi-Fi
 adapter. On macOS, first try `ipconfig getifaddr en0`; if that prints nothing,
 use `ifconfig` and find the active Wi-Fi interface. On Linux, use `ip -4 addr`.
 
-In direct-connect mode, choose the address beginning with `10.42.0.`. Ignore
-loopback (`127.0.0.1`), disconnected adapters, Docker/virtual-machine adapters,
-and addresses from a different network. The examples below use
-`10.42.0.124`; replace it with your computer's actual value.
+In direct-connect mode, the address usually begins with `10.42.0.`. You do not
+need to copy it into normal driver commands: the program selects the route to
+the Scout automatically, even when Ethernet, VPN, or virtual adapters are also
+present.
 
 Check whether the robot responds:
 
@@ -175,7 +179,7 @@ Check whether the robot responds:
 A blocked ping does not always mean the robot is unreachable, but a successful
 reply confirms the basic route.
 
-## 4. Optional: open an SSH diagnostic shell
+## 3. Optional: open an SSH diagnostic shell
 
 **Skip this section for normal driver use.** ROS connections do not require
 SSH, and none of the driver commands below depend on it.
@@ -215,13 +219,12 @@ on a shared network. Change them using the supported Moorebot setup process,
 record classroom-specific credentials somewhere private, and never put real
 passwords into an issue or discovery capture.
 
-## 5. Discover the robot
+## 4. Discover the robot
 
-Run this from the project directory as one line, replacing the example
-computer address:
+Run this from the project directory:
 
 ```text
-cargo run --release -- --master http://10.42.0.1:11311 --advertise-address 10.42.0.124 discover
+./moorebot-scout discover
 ```
 
 The command asks the Scout's ROS master for every published topic and
@@ -255,12 +258,12 @@ name, add this single mapping to your computer's hosts file:
 
 Run `discover` again after saving the file.
 
-## 6. Read the sensors
+## 5. Read the sensors
 
-This example listens for 30 seconds:
+Monitoring now continues until you press Ctrl-C:
 
 ```text
-cargo run --release -- --master http://10.42.0.1:11311 --advertise-address 10.42.0.124 monitor --seconds 30
+./moorebot-scout monitor
 ```
 
 Representative output looks like this; your numbers will change continuously:
@@ -277,16 +280,16 @@ sensor, and battery state. Some Scout nodes start publishing only after a
 subscriber appears, so `waiting for sensor publishers...` can be normal for a
 few seconds.
 
-Use `--seconds 0` to run until Ctrl-C:
+Use `--seconds` when you want a fixed-duration sample:
 
 ```text
-cargo run --release -- --master http://10.42.0.1:11311 --advertise-address 10.42.0.124 monitor --seconds 0
+./moorebot-scout monitor --seconds 30
 ```
 
 The displayed units follow the ROS message definitions, but physical scaling,
 orientation, and firmware differences still require hardware validation.
 
-## 7. Perform the first motion test
+## 6. Perform the first motion test
 
 Complete this checklist first:
 
@@ -299,7 +302,7 @@ Complete this checklist first:
 Then request only 0.05 m/s forward for 250 milliseconds:
 
 ```text
-cargo run --release -- --master http://10.42.0.1:11311 --advertise-address 10.42.0.124 drive --forward 0.05 --duration-ms 250
+./moorebot-scout drive --forward 0.05 --duration-ms 250
 ```
 
 The driver refuses to move if no `/cmd_vel` subscriber connects within three
@@ -311,25 +314,77 @@ Once the first command is understood, these are separate low-speed examples:
 
 ```text
 # Ask for backward motion
-cargo run --release -- --master http://10.42.0.1:11311 --advertise-address 10.42.0.124 drive --forward -0.05 --duration-ms 250
+./moorebot-scout drive --forward -0.05 --duration-ms 250
 
 # Ask for leftward motion
-cargo run --release -- --master http://10.42.0.1:11311 --advertise-address 10.42.0.124 drive --lateral 0.05 --duration-ms 250
+./moorebot-scout drive --lateral 0.05 --duration-ms 250
 
 # Ask for a counter-clockwise turn
-cargo run --release -- --master http://10.42.0.1:11311 --advertise-address 10.42.0.124 drive --yaw 0.3 --duration-ms 250
+./moorebot-scout drive --yaw 2.0 --duration-ms 250
 ```
 
 Those direction names are the driver's intended standard coordinate semantics.
 Confirm the real wheel directions while the robot is still on the stand and
 report discrepancies in the hardware-validation issue.
 
+## 7. Drive with WASD and save pictures
+
+Only try interactive driving after the short motion test above behaves as
+expected. Put the Scout on the floor in a clear, level area away from stairs,
+edges, people, pets, and loose cables. Keep the terminal window focused and be
+ready to use the physical power control.
+
+Start the keyboard controller:
+
+```text
+./moorebot-scout teleop
+```
+
+| Key | Result |
+|---|---|
+| W | Drive forward |
+| S | Drive backward |
+| A / D | Strafe left / right |
+| Q / E | Turn left / right |
+| Up / Down | Increase / decrease speed and control rate |
+| Space | Stop, then save the latest camera image as a new JPEG |
+| Escape or Ctrl-C | Stop and exit |
+
+Hold or repeatedly tap a movement key. The program allows up to 1.1 seconds
+after the first press for the computer's normal key-repeat delay. Once repeats
+begin, it stops a direction within 350 milliseconds if those events cease.
+Terminals that report key-release events stop that direction immediately on
+release. This means a quick tap on a legacy terminal can continue for up to 1.1
+seconds, so the default speed remains deliberately low. These timers and the
+final stop command reduce risk, but neither can protect against a crashed robot
+process, a broken network, or loss of power to the computer.
+
+Pictures are saved on the Desktop with names such as
+`scout-1788990123456-frame-42.jpg`. Pressing Space before a valid JPEG arrives
+prints a message and does not create a file. To use a different folder or lower
+speeds, add options after `teleop`:
+
+```text
+./moorebot-scout teleop --speed 0.05 --strafe-speed 0.05 --picture-directory scout-pictures
+```
+
+The base forward and strafe speeds are 0.10 m/s. The default turn rate is 2.0
+rad/s because lower yaw can fall below the physical motor driver's reliable
+duty threshold. The Scout firmware mixes each forward, strafe, and turn command
+across all four Mecanum wheels. Teleop samples and publishes at 40 Hz; Up/Down
+changes both velocity and rate in 25% steps and displays the new values.
+
+The program refuses values above the Scout safety limits, refuses motion when
+no `/cmd_vel` subscriber connects, never overwrites an existing picture, and
+accepts only bounded, well-formed JPEG frames from the configured camera topic.
+Run `./moorebot-scout teleop --help` to see the control summary and every option.
+
 ## 8. Bridge the color camera
 
 Start the bridge in one terminal:
 
 ```text
-cargo run --release -- --master http://10.42.0.1:11311 --advertise-address 10.42.0.124 camera-bridge
+./moorebot-scout camera-bridge
 ```
 
 It converts the Scout-specific `/CoreNode/jpg` messages into standard ROS 1
@@ -370,9 +425,10 @@ Netcat is installed.
 
 ### The master responds, but subscriptions fail
 
-Recheck `--advertise-address`. It must be your computer's address on the Scout
-network, not the robot address and not `127.0.0.1`. Add the `linaro-alip` hosts
-entry described above if the error names that host.
+The program normally selects the advertised address automatically. Add the
+`linaro-alip` hosts entry described above if the error names that host. For an
+unusual routed setup, `--advertise-address 10.42.0.x` manually overrides route
+selection; it must be the computer's address, not the robot or `127.0.0.1`.
 
 ### `no subscriber connected to /cmd_vel`
 
@@ -392,7 +448,7 @@ and attach them to [hardware capture issue
 The following saves discovery output to a file on every supported platform:
 
 ```text
-cargo run --release -- --master http://10.42.0.1:11311 --advertise-address 10.42.0.124 discover > scout-discover.txt
+./moorebot-scout discover > scout-discover.txt
 ```
 
 Before sharing the file, remove private network names, addresses you do not
