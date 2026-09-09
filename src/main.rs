@@ -30,7 +30,8 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-const TELEOP_DEADMAN: Duration = Duration::from_millis(350);
+const TELEOP_INITIAL_REPEAT_GRACE: Duration = Duration::from_millis(1_100);
+const TELEOP_REPEAT_DEADMAN: Duration = Duration::from_millis(350);
 const TELEOP_PERIOD: Duration = Duration::from_millis(50);
 
 #[derive(Parser)]
@@ -294,16 +295,13 @@ impl TeleopControl {
                 KeyCode::Char(' ') if key.kind == KeyEventKind::Press => {
                     return TeleopAction::Capture;
                 }
-                KeyCode::Char(character) => {
-                    let deadline = Some(now + TELEOP_DEADMAN);
-                    match character.to_ascii_lowercase() {
-                        'w' => self.forward_until = deadline,
-                        's' => self.reverse_until = deadline,
-                        'a' => self.left_until = deadline,
-                        'd' => self.right_until = deadline,
-                        _ => {}
-                    }
-                }
+                KeyCode::Char(character) => match character.to_ascii_lowercase() {
+                    'w' => Self::refresh(&mut self.forward_until, key.kind, now),
+                    's' => Self::refresh(&mut self.reverse_until, key.kind, now),
+                    'a' => Self::refresh(&mut self.left_until, key.kind, now),
+                    'd' => Self::refresh(&mut self.right_until, key.kind, now),
+                    _ => {}
+                },
                 _ => {}
             }
         } else if key.kind == KeyEventKind::Release {
@@ -317,6 +315,20 @@ impl TeleopControl {
         }
 
         TeleopAction::None
+    }
+
+    fn refresh(deadline: &mut Option<Instant>, kind: KeyEventKind, now: Instant) {
+        // Legacy terminals report every auto-repeat as another Press. Treat a
+        // Press received while this key is still active as a repeat, while the
+        // first Press gets enough grace for normal desktop repeat delays.
+        let is_repeat = kind == KeyEventKind::Repeat
+            || deadline.is_some_and(|current_deadline| current_deadline > now);
+        let timeout = if is_repeat {
+            TELEOP_REPEAT_DEADMAN
+        } else {
+            TELEOP_INITIAL_REPEAT_GRACE
+        };
+        *deadline = Some(now + timeout);
     }
 
     fn velocity(&mut self, now: Instant, speed: f64, turn_speed: f64) -> Velocity {
@@ -714,7 +726,31 @@ mod tests {
         );
         assert_eq!(control.velocity(now, 0.08, 0.6).yaw_rps, 0.6);
         assert_eq!(
-            control.velocity(now + TELEOP_DEADMAN, 0.08, 0.6),
+            control
+                .velocity(now + Duration::from_millis(500), 0.08, 0.6)
+                .yaw_rps,
+            0.6
+        );
+        assert_eq!(
+            control.velocity(now + TELEOP_INITIAL_REPEAT_GRACE, 0.08, 0.6),
+            Velocity::default()
+        );
+    }
+
+    #[test]
+    fn teleop_repeat_switches_to_the_short_deadman() {
+        let now = Instant::now();
+        let mut control = TeleopControl::default();
+        let press =
+            KeyEvent::new_with_kind(KeyCode::Char('w'), KeyModifiers::NONE, KeyEventKind::Press);
+
+        control.handle_key(press, now);
+        let repeated_at = now + Duration::from_millis(500);
+        // This covers legacy terminals, which report repeats as Press rather
+        // than KeyEventKind::Repeat.
+        control.handle_key(press, repeated_at);
+        assert_eq!(
+            control.velocity(repeated_at + TELEOP_REPEAT_DEADMAN, 0.08, 0.6),
             Velocity::default()
         );
     }

@@ -348,12 +348,14 @@ Start the keyboard controller:
 | Space | Stop, then save the latest camera image as a new JPEG |
 | Escape or Ctrl-C | Stop and exit |
 
-Hold or repeatedly tap a movement key. The program refreshes motion commands
-20 times per second and stops a direction within 350 milliseconds if its key
-events cease. Terminals that report key-release events stop that direction
-immediately on release. This deadman timer and the final stop command reduce
-risk, but neither can protect against a crashed robot process, a broken network,
-or loss of power to the computer.
+Hold or repeatedly tap a movement key. The program allows up to 1.1 seconds
+after the first press for the computer's normal key-repeat delay. Once repeats
+begin, it stops a direction within 350 milliseconds if those events cease.
+Terminals that report key-release events stop that direction immediately on
+release. This means a quick tap on a legacy terminal can continue for up to 1.1
+seconds, so the default speed remains deliberately low. These timers and the
+final stop command reduce risk, but neither can protect against a crashed robot
+process, a broken network, or loss of power to the computer.
 
 Pictures are saved in the current folder with names such as
 `scout-1788990123456-frame-42.jpg`. Pressing Space before a valid JPEG arrives

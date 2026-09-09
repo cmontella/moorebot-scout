@@ -43,7 +43,7 @@ If you want to use the crate from another Rust program, see the
   linear-axis mapping and a zero-velocity command on normal, error, or Ctrl-C
   exit.
 - Drive interactively with WASD and save the latest valid camera JPEG with
-  Space. A 350 ms input deadman stops movement when key events cease.
+  Space. Key-release handling and input deadman timers stop stale movement.
 - Decode the Scout's 6-axis IMU, time-of-flight range sensor, ambient-light
   sensor, and custom battery status.
 - Decode the custom `roller_eye/frame` media message correctly.
