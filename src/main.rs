@@ -32,7 +32,9 @@ use std::{
 
 const TELEOP_INITIAL_REPEAT_GRACE: Duration = Duration::from_millis(1_100);
 const TELEOP_REPEAT_DEADMAN: Duration = Duration::from_millis(350);
-const TELEOP_PERIOD: Duration = Duration::from_millis(50);
+const SPEED_SCALE_STEP: f64 = 0.25;
+const MIN_SPEED_SCALE: f64 = 0.25;
+const TELEOP_HELP: &str = "Controls:\n  W / S       forward / backward\n  A / D       strafe left / right\n  Q / E       turn left / right\n  Up / Down   increase / decrease speed and control rate\n  Space       save the latest camera frame to the Desktop\n  Esc/Ctrl-C  stop and exit";
 
 #[derive(Parser)]
 #[command(version, about = "Rust driver tools for the Moorebot Scout")]
@@ -41,7 +43,7 @@ struct Cli {
     #[arg(long, global = true, default_value = "http://10.42.0.1:11311")]
     master: String,
 
-    /// Address on this computer that the Scout can reach.
+    /// Override the local address automatically selected for the Scout route.
     #[arg(long, global = true)]
     advertise_address: Option<String>,
 
@@ -83,16 +85,23 @@ struct DriveArgs {
 }
 
 #[derive(Args)]
+#[command(after_help = TELEOP_HELP)]
 struct TeleopArgs {
     /// Forward and reverse speed in meters per second.
-    #[arg(long, default_value_t = 0.08)]
+    #[arg(long, default_value_t = 0.10)]
     speed: f64,
-    /// Turning speed in radians per second.
-    #[arg(long, default_value_t = 0.6)]
+    /// Left/right strafe speed in meters per second.
+    #[arg(long, default_value_t = 0.10)]
+    strafe_speed: f64,
+    /// Rotation speed in radians per second.
+    #[arg(long, default_value_t = 2.0)]
     turn_speed: f64,
-    /// Directory in which Space saves JPEG pictures.
-    #[arg(long, default_value = ".")]
-    picture_directory: PathBuf,
+    /// Base velocity publication frequency; Up/Down adjusts it with speed.
+    #[arg(long, default_value_t = 40.0)]
+    rate_hz: f64,
+    /// Directory in which Space saves JPEG pictures; defaults to the Desktop.
+    #[arg(long, visible_alias = "screenshot-dir")]
+    picture_directory: Option<PathBuf>,
     /// Scout JPEG camera topic.
     #[arg(long, default_value = topics::JPEG)]
     camera_topic: String,
@@ -101,7 +110,7 @@ struct TeleopArgs {
 #[derive(Args)]
 struct MonitorArgs {
     /// Stop after this many seconds; use zero to run until Ctrl-C.
-    #[arg(long, default_value_t = 10)]
+    #[arg(long, default_value_t = 0)]
     seconds: u64,
 }
 
@@ -208,6 +217,12 @@ fn drive(config: &Ros1Config, args: DriveArgs) -> Result<(), Box<dyn Error>> {
     if !args.rate_hz.is_finite() || !(1.0..=100.0).contains(&args.rate_hz) {
         return Err("--rate-hz must be finite and between 1 and 100".into());
     }
+    if args.forward == 0.0 && args.lateral == 0.0 && args.yaw == 0.0 {
+        return Err(
+            "drive needs movement: use --forward, --lateral, or --yaw (for example: moorebot-scout drive --forward 0.1)"
+                .into(),
+        );
+    }
 
     let command = Velocity {
         forward_mps: args.forward,
@@ -270,6 +285,8 @@ fn drive(config: &Ros1Config, args: DriveArgs) -> Result<(), Box<dyn Error>> {
 enum TeleopAction {
     None,
     Capture,
+    Faster,
+    Slower,
     Exit,
 }
 
@@ -277,8 +294,10 @@ enum TeleopAction {
 struct TeleopControl {
     forward_until: Option<Instant>,
     reverse_until: Option<Instant>,
-    left_until: Option<Instant>,
-    right_until: Option<Instant>,
+    strafe_left_until: Option<Instant>,
+    strafe_right_until: Option<Instant>,
+    turn_left_until: Option<Instant>,
+    turn_right_until: Option<Instant>,
 }
 
 impl TeleopControl {
@@ -295,11 +314,19 @@ impl TeleopControl {
                 KeyCode::Char(' ') if key.kind == KeyEventKind::Press => {
                     return TeleopAction::Capture;
                 }
+                KeyCode::Up if key.kind == KeyEventKind::Press => {
+                    return TeleopAction::Faster;
+                }
+                KeyCode::Down if key.kind == KeyEventKind::Press => {
+                    return TeleopAction::Slower;
+                }
                 KeyCode::Char(character) => match character.to_ascii_lowercase() {
                     'w' => Self::refresh(&mut self.forward_until, key.kind, now),
                     's' => Self::refresh(&mut self.reverse_until, key.kind, now),
-                    'a' => Self::refresh(&mut self.left_until, key.kind, now),
-                    'd' => Self::refresh(&mut self.right_until, key.kind, now),
+                    'a' => Self::refresh(&mut self.strafe_left_until, key.kind, now),
+                    'd' => Self::refresh(&mut self.strafe_right_until, key.kind, now),
+                    'q' => Self::refresh(&mut self.turn_left_until, key.kind, now),
+                    'e' => Self::refresh(&mut self.turn_right_until, key.kind, now),
                     _ => {}
                 },
                 _ => {}
@@ -308,8 +335,10 @@ impl TeleopControl {
             match key.code {
                 KeyCode::Char('w' | 'W') => self.forward_until = None,
                 KeyCode::Char('s' | 'S') => self.reverse_until = None,
-                KeyCode::Char('a' | 'A') => self.left_until = None,
-                KeyCode::Char('d' | 'D') => self.right_until = None,
+                KeyCode::Char('a' | 'A') => self.strafe_left_until = None,
+                KeyCode::Char('d' | 'D') => self.strafe_right_until = None,
+                KeyCode::Char('q' | 'Q') => self.turn_left_until = None,
+                KeyCode::Char('e' | 'E') => self.turn_right_until = None,
                 _ => {}
             }
         }
@@ -331,16 +360,25 @@ impl TeleopControl {
         *deadline = Some(now + timeout);
     }
 
-    fn velocity(&mut self, now: Instant, speed: f64, turn_speed: f64) -> Velocity {
+    fn velocity(
+        &mut self,
+        now: Instant,
+        speed: f64,
+        strafe_speed: f64,
+        turn_speed: f64,
+        speed_scale: f64,
+    ) -> Velocity {
         let forward = Self::active(&mut self.forward_until, now) as i8
             - Self::active(&mut self.reverse_until, now) as i8;
-        let turn = Self::active(&mut self.left_until, now) as i8
-            - Self::active(&mut self.right_until, now) as i8;
+        let strafe = Self::active(&mut self.strafe_left_until, now) as i8
+            - Self::active(&mut self.strafe_right_until, now) as i8;
+        let turn = Self::active(&mut self.turn_left_until, now) as i8
+            - Self::active(&mut self.turn_right_until, now) as i8;
 
         Velocity {
-            forward_mps: f64::from(forward) * speed,
-            lateral_mps: 0.0,
-            yaw_rps: f64::from(turn) * turn_speed,
+            forward_mps: f64::from(forward) * speed * speed_scale,
+            lateral_mps: f64::from(strafe) * strafe_speed * speed_scale,
+            yaw_rps: f64::from(turn) * turn_speed * speed_scale,
         }
     }
 
@@ -356,6 +394,27 @@ impl TeleopControl {
     fn clear(&mut self) {
         *self = Self::default();
     }
+}
+
+fn maximum_speed_scale(args: &TeleopArgs, limits: MotionLimits) -> f64 {
+    [
+        limits.max_forward_mps / args.speed,
+        limits.max_lateral_mps / args.strafe_speed,
+        limits.max_yaw_rps / args.turn_speed,
+        100.0 / args.rate_hz,
+    ]
+    .into_iter()
+    .fold(f64::INFINITY, f64::min)
+    .max(MIN_SPEED_SCALE)
+}
+
+fn adjusted_speed_scale(current: f64, increase: bool, maximum: f64) -> f64 {
+    let change = if increase {
+        SPEED_SCALE_STEP
+    } else {
+        -SPEED_SCALE_STEP
+    };
+    (current + change).clamp(MIN_SPEED_SCALE, maximum)
 }
 
 struct RawTerminal {
@@ -444,18 +503,22 @@ fn run_teleop_session(
     latest_frame: &Mutex<Option<ScoutFrame>>,
     running: &AtomicBool,
     args: &TeleopArgs,
+    picture_directory: &Path,
 ) -> Result<(), Box<dyn Error>> {
     let _terminal = RawTerminal::enter()?;
     let mut control = TeleopControl::default();
     let mut next_publish = Instant::now();
+    let maximum_scale = maximum_speed_scale(args, MotionLimits::default());
+    let mut speed_scale = 1.0_f64.min(maximum_scale);
 
     publisher.send(ScoutTwist::zero())?;
     while running.load(Ordering::SeqCst) && rosrust::is_ok() {
         let now = Instant::now();
+        let period = Duration::from_secs_f64(1.0 / (args.rate_hz * speed_scale));
         let wait = next_publish
             .checked_duration_since(now)
             .unwrap_or(Duration::ZERO)
-            .min(TELEOP_PERIOD);
+            .min(period);
 
         if event::poll(wait)?
             && let Event::Key(key) = event::read()?
@@ -468,11 +531,25 @@ fn run_teleop_session(
                     // cannot leave the previous motion command active.
                     control.clear();
                     publisher.send(ScoutTwist::zero())?;
-                    match save_latest_picture(latest_frame, &args.picture_directory)? {
+                    match save_latest_picture(latest_frame, picture_directory)? {
                         Some(path) => println!("\r\nSaved {}", path.display()),
                         None => println!("\r\nNo JPEG camera frame has arrived yet."),
                     }
-                    next_publish = Instant::now() + TELEOP_PERIOD;
+                    next_publish = Instant::now() + period;
+                }
+                action @ (TeleopAction::Faster | TeleopAction::Slower) => {
+                    speed_scale = adjusted_speed_scale(
+                        speed_scale,
+                        matches!(action, TeleopAction::Faster),
+                        maximum_scale,
+                    );
+                    println!(
+                        "\r\nSpeed: {:.0}% | control rate: {:.0} Hz",
+                        speed_scale * 100.0,
+                        args.rate_hz * speed_scale
+                    );
+                    io::stdout().flush()?;
+                    next_publish = Instant::now();
                 }
             }
         }
@@ -480,10 +557,16 @@ fn run_teleop_session(
         let now = Instant::now();
         if now >= next_publish {
             let command = control
-                .velocity(now, args.speed, args.turn_speed)
+                .velocity(
+                    now,
+                    args.speed,
+                    args.strafe_speed,
+                    args.turn_speed,
+                    speed_scale,
+                )
                 .to_scout_twist(MotionLimits::default())?;
             publisher.send(command)?;
-            next_publish = now + TELEOP_PERIOD;
+            next_publish = now + Duration::from_secs_f64(1.0 / (args.rate_hz * speed_scale));
         }
     }
 
@@ -493,8 +576,16 @@ fn run_teleop_session(
 fn teleop(config: &Ros1Config, args: TeleopArgs) -> Result<(), Box<dyn Error>> {
     let limits = MotionLimits::default();
     validate_teleop_speed("--speed", args.speed, limits.max_forward_mps)?;
+    validate_teleop_speed("--strafe-speed", args.strafe_speed, limits.max_lateral_mps)?;
     validate_teleop_speed("--turn-speed", args.turn_speed, limits.max_yaw_rps)?;
-    fs::create_dir_all(&args.picture_directory)?;
+    if !args.rate_hz.is_finite() || !(1.0..=100.0).contains(&args.rate_hz) {
+        return Err("--rate-hz must be finite and between 1 and 100".into());
+    }
+    let picture_directory = args
+        .picture_directory
+        .clone()
+        .unwrap_or_else(default_picture_directory);
+    fs::create_dir_all(&picture_directory)?;
 
     // SAFETY: This command initializes ROS before starting any ROS-owned
     // publishers, subscriptions, signal handlers, or worker threads.
@@ -528,13 +619,22 @@ fn teleop(config: &Ros1Config, args: TeleopArgs) -> Result<(), Box<dyn Error>> {
     }
 
     println!("Connected to the Scout at {}.", config.master_uri);
-    println!("W/S: forward/back  A/D: turn  Space: save picture  Esc: stop and quit");
+    println!("{TELEOP_HELP}");
+    let initial_scale = 1.0_f64.min(maximum_speed_scale(&args, limits));
     println!(
-        "Pictures will be saved in {}. Keep this terminal focused.",
-        args.picture_directory.display()
+        "Pictures: {} | Speed: {:.0}% | control rate: {:.0} Hz\nKeep this terminal focused.",
+        picture_directory.display(),
+        initial_scale * 100.0,
+        args.rate_hz * initial_scale
     );
 
-    let session_result = run_teleop_session(&publisher, &latest_frame, &running, &args);
+    let session_result = run_teleop_session(
+        &publisher,
+        &latest_frame,
+        &running,
+        &args,
+        &picture_directory,
+    );
     let stop_result = publisher.send(ScoutTwist::zero());
     thread::sleep(Duration::from_millis(100));
     drop(camera_subscription);
@@ -544,6 +644,21 @@ fn teleop(config: &Ros1Config, args: TeleopArgs) -> Result<(), Box<dyn Error>> {
     stop_result?;
     println!("Stop command sent.");
     Ok(())
+}
+
+fn default_picture_directory() -> PathBuf {
+    std::env::var_os("USERPROFILE")
+        .map(PathBuf::from)
+        .map(|profile| profile.join("Desktop"))
+        .filter(|desktop| desktop.is_dir())
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .map(|home| home.join("Desktop"))
+        })
+        .filter(|desktop| desktop.is_dir())
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 fn monitor(config: &Ros1Config, args: MonitorArgs) -> Result<(), Box<dyn Error>> {
@@ -708,7 +823,7 @@ mod tests {
             ),
             TeleopAction::None
         );
-        assert_eq!(control.velocity(now, 0.08, 0.6).forward_mps, 0.08);
+        assert_eq!(control.velocity(now, 0.08, 0.1, 2.0, 1.0).forward_mps, 0.08);
 
         control.handle_key(
             KeyEvent::new_with_kind(
@@ -718,23 +833,33 @@ mod tests {
             ),
             now,
         );
-        assert_eq!(control.velocity(now, 0.08, 0.6), Velocity::default());
+        assert_eq!(
+            control.velocity(now, 0.08, 0.1, 2.0, 1.0),
+            Velocity::default()
+        );
 
         control.handle_key(
             KeyEvent::new_with_kind(KeyCode::Char('a'), KeyModifiers::NONE, KeyEventKind::Press),
             now,
         );
-        assert_eq!(control.velocity(now, 0.08, 0.6).yaw_rps, 0.6);
+        assert_eq!(control.velocity(now, 0.08, 0.1, 2.0, 1.0).lateral_mps, 0.1);
+        assert_eq!(control.velocity(now, 0.08, 0.1, 2.0, 1.0).yaw_rps, 0.0);
         assert_eq!(
             control
-                .velocity(now + Duration::from_millis(500), 0.08, 0.6)
-                .yaw_rps,
-            0.6
+                .velocity(now + Duration::from_millis(500), 0.08, 0.1, 2.0, 1.0)
+                .lateral_mps,
+            0.1
         );
         assert_eq!(
-            control.velocity(now + TELEOP_INITIAL_REPEAT_GRACE, 0.08, 0.6),
+            control.velocity(now + TELEOP_INITIAL_REPEAT_GRACE, 0.08, 0.1, 2.0, 1.0,),
             Velocity::default()
         );
+
+        control.handle_key(
+            KeyEvent::new_with_kind(KeyCode::Char('q'), KeyModifiers::NONE, KeyEventKind::Press),
+            now,
+        );
+        assert_eq!(control.velocity(now, 0.08, 0.1, 2.0, 1.0).yaw_rps, 2.0);
     }
 
     #[test]
@@ -750,7 +875,7 @@ mod tests {
         // than KeyEventKind::Repeat.
         control.handle_key(press, repeated_at);
         assert_eq!(
-            control.velocity(repeated_at + TELEOP_REPEAT_DEADMAN, 0.08, 0.6),
+            control.velocity(repeated_at + TELEOP_REPEAT_DEADMAN, 0.08, 0.1, 2.0, 1.0,),
             Velocity::default()
         );
     }
@@ -789,6 +914,28 @@ mod tests {
             ),
             TeleopAction::Exit
         );
+
+        assert_eq!(
+            control.handle_key(
+                KeyEvent::new_with_kind(KeyCode::Up, KeyModifiers::NONE, KeyEventKind::Press),
+                now,
+            ),
+            TeleopAction::Faster
+        );
+        assert_eq!(
+            control.handle_key(
+                KeyEvent::new_with_kind(KeyCode::Down, KeyModifiers::NONE, KeyEventKind::Press),
+                now,
+            ),
+            TeleopAction::Slower
+        );
+    }
+
+    #[test]
+    fn teleop_speed_adjustment_is_bounded() {
+        assert_eq!(adjusted_speed_scale(1.0, true, 2.0), 1.25);
+        assert_eq!(adjusted_speed_scale(2.0, true, 2.0), 2.0);
+        assert_eq!(adjusted_speed_scale(0.25, false, 2.0), 0.25);
     }
 
     #[test]

@@ -16,6 +16,7 @@ use rosrust::{
 use std::{
     fmt,
     io::{self, Read, Write},
+    net::{SocketAddr, ToSocketAddrs, UdpSocket},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -111,19 +112,71 @@ pub unsafe fn init(
     // after reading the TCPROS length prefix and before allocating the body.
     rosrust::set_max_message_bytes(maximum_message_bytes);
     rosrust::set_max_connection_header_bytes(MAX_CONNECTION_HEADER_BYTES);
+    let advertise_address = match &config.advertise_address {
+        Some(address) => address.clone(),
+        None => route_local_address(&config.master_uri)?,
+    };
+
     // SAFETY: The caller upholds the process-environment synchronization
     // requirement documented above.
     unsafe {
         std::env::set_var("ROS_MASTER_URI", &config.master_uri);
-        if let Some(address) = &config.advertise_address {
-            // ROS_HOSTNAME has priority over ROS_IP in rosrust, so clear it
-            // when the caller explicitly supplies a reachable address.
-            std::env::remove_var("ROS_HOSTNAME");
-            std::env::set_var("ROS_IP", address);
-        }
+        // ROS_HOSTNAME has priority over ROS_IP in rosrust. Always clear it so
+        // a stale shell setting cannot override the explicit or detected route.
+        std::env::remove_var("ROS_HOSTNAME");
+        std::env::set_var("ROS_IP", advertise_address);
     }
     rosrust::try_init_with_options(&config.node_name, capture_sigint)
         .map_err(|error| Ros1Error(error.to_string()))
+}
+
+/// Return the local IP selected by the operating system for traffic to the ROS
+/// master. Connecting a UDP socket performs route selection without sending a
+/// packet, so this works with multiple Wi-Fi, Ethernet, and VPN adapters.
+fn route_local_address(master_uri: &str) -> Result<String, Ros1Error> {
+    let authority = master_authority(master_uri)?;
+    let mut destinations = authority
+        .to_socket_addrs()
+        .map_err(|error| Ros1Error(format!("cannot resolve ROS master {authority}: {error}")))?
+        .collect::<Vec<_>>();
+    destinations.sort_by_key(|address| !address.is_ipv4());
+
+    let mut last_error = None;
+    for destination in destinations {
+        let bind_address = if destination.is_ipv4() {
+            SocketAddr::from(([0, 0, 0, 0], 0))
+        } else {
+            SocketAddr::from(([0_u16; 8], 0))
+        };
+        match UdpSocket::bind(bind_address).and_then(|socket| {
+            socket.connect(destination)?;
+            socket.local_addr()
+        }) {
+            Ok(local) if !local.ip().is_unspecified() => return Ok(local.ip().to_string()),
+            Ok(_) => {}
+            Err(error) => last_error = Some(error),
+        }
+    }
+
+    let detail = last_error
+        .map(|error| format!(": {error}"))
+        .unwrap_or_default();
+    Err(Ros1Error(format!(
+        "cannot determine the local address used to reach {master_uri}{detail}; pass --advertise-address explicitly"
+    )))
+}
+
+fn master_authority(master_uri: &str) -> Result<&str, Ros1Error> {
+    let without_scheme = master_uri
+        .strip_prefix("http://")
+        .ok_or_else(|| Ros1Error("ROS master URI must start with http://".into()))?;
+    let authority = without_scheme.split('/').next().unwrap_or_default();
+    if authority.is_empty() || !authority.contains(':') {
+        return Err(Ros1Error(format!(
+            "ROS master URI must include a host and port: {master_uri}"
+        )));
+    }
+    Ok(authority)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -323,7 +376,9 @@ impl std::error::Error for Ros1Error {}
 
 #[cfg(test)]
 mod tests {
-    use super::{BoundedRawMessage, encode_compressed_image};
+    use super::{
+        BoundedRawMessage, encode_compressed_image, master_authority, route_local_address,
+    };
     use rosrust::RosMsg;
 
     #[test]
@@ -347,5 +402,28 @@ mod tests {
 
         let error = BoundedRawMessage::<4>::decode(&[1, 2, 3, 4, 5, 6][..]).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn extracts_ros_master_authority() {
+        assert_eq!(
+            master_authority("http://10.42.0.1:11311").unwrap(),
+            "10.42.0.1:11311"
+        );
+        assert_eq!(
+            master_authority("http://robot.local:11311/path").unwrap(),
+            "robot.local:11311"
+        );
+        assert!(master_authority("https://10.42.0.1:11311").is_err());
+        assert!(master_authority("http://10.42.0.1").is_err());
+    }
+
+    #[test]
+    fn route_selection_returns_a_non_loopback_ipv4_address() {
+        let address = route_local_address("http://192.0.2.1:11311").unwrap();
+        let parsed: std::net::IpAddr = address.parse().unwrap();
+        assert!(parsed.is_ipv4());
+        assert!(!parsed.is_loopback());
+        assert!(!parsed.is_unspecified());
     }
 }

@@ -59,9 +59,10 @@ flowchart LR
 
 The Rust driver does **not** run commands through SSH. It first asks the ROS
 master where topics live, and then ROS nodes open direct TCPROS connections to
-exchange messages. That is why the command needs both the robot's master
-address and your computer's advertised address. SSH is a separate, optional
-way to open a Linux terminal on the robot for diagnostics.
+exchange messages. The program automatically asks the operating system which
+local address reaches the robot and advertises it for those return connections.
+SSH is a separate, optional way to open a Linux terminal on the robot for
+diagnostics.
 
 ## Safety first
 
@@ -107,7 +108,8 @@ newest package for your computer:
 
 Extract the downloaded package. It contains just `moorebot-scout` on a Mac or
 `moorebot-scout.exe` on Windows. You do not need to install Rust, ROS, Git,
-Python, or MATLAB.
+Python, or MATLAB. Windows users can also download the standalone
+`moorebot-scout.exe` release asset directly instead of the ZIP.
 
 These early releases are not yet code-signed. Windows SmartScreen or macOS
 Gatekeeper may therefore ask you to confirm that you trust the download. Only
@@ -158,16 +160,16 @@ the program has been copied into the current folder.
    to change this default after the first login. A Scout already configured in
    access-point mode may instead be on the same trusted local network as your
    computer.
-3. Find the computer's address on that network.
+3. Confirm the computer received an address on that network.
 
 On Windows, run `ipconfig` and find the `IPv4 Address` under the active Wi-Fi
 adapter. On macOS, first try `ipconfig getifaddr en0`; if that prints nothing,
 use `ifconfig` and find the active Wi-Fi interface. On Linux, use `ip -4 addr`.
 
-In direct-connect mode, choose the address beginning with `10.42.0.`. Ignore
-loopback (`127.0.0.1`), disconnected adapters, Docker/virtual-machine adapters,
-and addresses from a different network. The examples below use
-`10.42.0.124`; replace it with your computer's actual value.
+In direct-connect mode, the address usually begins with `10.42.0.`. You do not
+need to copy it into normal driver commands: the program selects the route to
+the Scout automatically, even when Ethernet, VPN, or virtual adapters are also
+present.
 
 Check whether the robot responds:
 
@@ -219,11 +221,10 @@ passwords into an issue or discovery capture.
 
 ## 4. Discover the robot
 
-Run this from the project directory as one line, replacing the example
-computer address:
+Run this from the project directory:
 
 ```text
-./moorebot-scout --master http://10.42.0.1:11311 --advertise-address 10.42.0.124 discover
+./moorebot-scout discover
 ```
 
 The command asks the Scout's ROS master for every published topic and
@@ -259,10 +260,10 @@ Run `discover` again after saving the file.
 
 ## 5. Read the sensors
 
-This example listens for 30 seconds:
+Monitoring now continues until you press Ctrl-C:
 
 ```text
-./moorebot-scout --master http://10.42.0.1:11311 --advertise-address 10.42.0.124 monitor --seconds 30
+./moorebot-scout monitor
 ```
 
 Representative output looks like this; your numbers will change continuously:
@@ -279,10 +280,10 @@ sensor, and battery state. Some Scout nodes start publishing only after a
 subscriber appears, so `waiting for sensor publishers...` can be normal for a
 few seconds.
 
-Use `--seconds 0` to run until Ctrl-C:
+Use `--seconds` when you want a fixed-duration sample:
 
 ```text
-./moorebot-scout --master http://10.42.0.1:11311 --advertise-address 10.42.0.124 monitor --seconds 0
+./moorebot-scout monitor --seconds 30
 ```
 
 The displayed units follow the ROS message definitions, but physical scaling,
@@ -301,7 +302,7 @@ Complete this checklist first:
 Then request only 0.05 m/s forward for 250 milliseconds:
 
 ```text
-./moorebot-scout --master http://10.42.0.1:11311 --advertise-address 10.42.0.124 drive --forward 0.05 --duration-ms 250
+./moorebot-scout drive --forward 0.05 --duration-ms 250
 ```
 
 The driver refuses to move if no `/cmd_vel` subscriber connects within three
@@ -313,13 +314,13 @@ Once the first command is understood, these are separate low-speed examples:
 
 ```text
 # Ask for backward motion
-./moorebot-scout --master http://10.42.0.1:11311 --advertise-address 10.42.0.124 drive --forward -0.05 --duration-ms 250
+./moorebot-scout drive --forward -0.05 --duration-ms 250
 
 # Ask for leftward motion
-./moorebot-scout --master http://10.42.0.1:11311 --advertise-address 10.42.0.124 drive --lateral 0.05 --duration-ms 250
+./moorebot-scout drive --lateral 0.05 --duration-ms 250
 
 # Ask for a counter-clockwise turn
-./moorebot-scout --master http://10.42.0.1:11311 --advertise-address 10.42.0.124 drive --yaw 0.3 --duration-ms 250
+./moorebot-scout drive --yaw 2.0 --duration-ms 250
 ```
 
 Those direction names are the driver's intended standard coordinate semantics.
@@ -336,15 +337,16 @@ ready to use the physical power control.
 Start the keyboard controller:
 
 ```text
-./moorebot-scout --master http://10.42.0.1:11311 --advertise-address 10.42.0.124 teleop
+./moorebot-scout teleop
 ```
 
 | Key | Result |
 |---|---|
 | W | Drive forward |
 | S | Drive backward |
-| A | Turn left |
-| D | Turn right |
+| A / D | Strafe left / right |
+| Q / E | Turn left / right |
+| Up / Down | Increase / decrease speed and control rate |
 | Space | Stop, then save the latest camera image as a new JPEG |
 | Escape or Ctrl-C | Stop and exit |
 
@@ -357,26 +359,32 @@ seconds, so the default speed remains deliberately low. These timers and the
 final stop command reduce risk, but neither can protect against a crashed robot
 process, a broken network, or loss of power to the computer.
 
-Pictures are saved in the current folder with names such as
+Pictures are saved on the Desktop with names such as
 `scout-1788990123456-frame-42.jpg`. Pressing Space before a valid JPEG arrives
 prints a message and does not create a file. To use a different folder or lower
 speeds, add options after `teleop`:
 
 ```text
-./moorebot-scout --master http://10.42.0.1:11311 --advertise-address 10.42.0.124 teleop --speed 0.05 --turn-speed 0.3 --picture-directory scout-pictures
+./moorebot-scout teleop --speed 0.05 --strafe-speed 0.05 --picture-directory scout-pictures
 ```
 
-The default speeds are 0.08 m/s and 0.6 rad/s. The program refuses values above
-the driver's Scout safety limits, refuses motion when no `/cmd_vel` subscriber
-connects, never overwrites an existing picture, and accepts only bounded,
-well-formed JPEG frames from the configured camera topic.
+The base forward and strafe speeds are 0.10 m/s. The default turn rate is 2.0
+rad/s because lower yaw can fall below the physical motor driver's reliable
+duty threshold. The Scout firmware mixes each forward, strafe, and turn command
+across all four Mecanum wheels. Teleop samples and publishes at 40 Hz; Up/Down
+changes both velocity and rate in 25% steps and displays the new values.
+
+The program refuses values above the Scout safety limits, refuses motion when
+no `/cmd_vel` subscriber connects, never overwrites an existing picture, and
+accepts only bounded, well-formed JPEG frames from the configured camera topic.
+Run `./moorebot-scout teleop --help` to see the control summary and every option.
 
 ## 8. Bridge the color camera
 
 Start the bridge in one terminal:
 
 ```text
-./moorebot-scout --master http://10.42.0.1:11311 --advertise-address 10.42.0.124 camera-bridge
+./moorebot-scout camera-bridge
 ```
 
 It converts the Scout-specific `/CoreNode/jpg` messages into standard ROS 1
@@ -417,9 +425,10 @@ Netcat is installed.
 
 ### The master responds, but subscriptions fail
 
-Recheck `--advertise-address`. It must be your computer's address on the Scout
-network, not the robot address and not `127.0.0.1`. Add the `linaro-alip` hosts
-entry described above if the error names that host.
+The program normally selects the advertised address automatically. Add the
+`linaro-alip` hosts entry described above if the error names that host. For an
+unusual routed setup, `--advertise-address 10.42.0.x` manually overrides route
+selection; it must be the computer's address, not the robot or `127.0.0.1`.
 
 ### `no subscriber connected to /cmd_vel`
 
@@ -439,7 +448,7 @@ and attach them to [hardware capture issue
 The following saves discovery output to a file on every supported platform:
 
 ```text
-./moorebot-scout --master http://10.42.0.1:11311 --advertise-address 10.42.0.124 discover > scout-discover.txt
+./moorebot-scout discover > scout-discover.txt
 ```
 
 Before sharing the file, remove private network names, addresses you do not

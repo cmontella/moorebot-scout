@@ -6,8 +6,8 @@ An independent Rust driver and protocol library for the Moorebot Scout. It
 connects directly to the ROS 1 master already running on the robot, so building
 the crate does **not** require a local ROS installation.
 
-> Status: the wire formats and control mapping are covered by offline tests,
-> but this version has not yet been exercised against a physical Scout. Put the
+> Status: discovery, camera capture, and interactive motion have been exercised
+> against a physical Scout. Hardware behavior remains safety-sensitive: put the
 > robot on blocks for the first motion test and keep a hand on its power button.
 
 ## Start here
@@ -23,14 +23,14 @@ contains one executable—no Rust, ROS, Python, or MATLAB installation is needed
 After extracting it, connect to the Scout network and run:
 
 ```text
-./moorebot-scout --master http://10.42.0.1:11311 --advertise-address 10.42.0.124 teleop
+./moorebot-scout teleop
 ```
 
-On Windows, use `./moorebot-scout.exe` in PowerShell. Replace `10.42.0.124`
-with the computer's address on the Scout network. Use W/S to move, A/D to turn,
-Space to save the latest camera image, and Escape to stop and exit. Releases
-are currently unsigned hardware previews; read the safety and download notes in
-the student guide before running one.
+On Windows, use `./moorebot-scout.exe teleop` in PowerShell. W/S drives,
+A/D strafes, Q/E turns, Up/Down changes speed and update rate, Space saves the
+latest camera image to the Desktop, and Escape stops and exits. Releases are
+currently unsigned hardware previews; read the safety and download notes in the
+student guide before running one.
 
 If you want to use the crate from another Rust program, see the
 [library examples](docs/library-usage.md).
@@ -89,28 +89,24 @@ can be run through Cargo as shown below.
    direct-connect mode this is usually a `10.42.0.x` address.
 3. If the robot advertises ROS nodes as `linaro-alip`, make that hostname resolve
    to the robot's address (commonly `10.42.0.1`).
-4. Pass the computer's reachable address with `--advertise-address`. Do not use
-   `127.0.0.1`; ROS 1 peers need to connect back to this process.
+4. Run the command. It asks the operating system which local address routes to
+   the Scout and advertises that address to ROS automatically.
 
 List everything the firmware currently exposes:
 
 ```sh
-cargo run --release -- \
-  --master http://10.42.0.1:11311 \
-  --advertise-address 10.42.0.124 \
-  discover
+moorebot-scout discover
 ```
 
-The address values are examples; use the addresses assigned to your robot and
-computer.
+The default ROS master is `http://10.42.0.1:11311`. Use `--master` for a
+different robot address. If automatic route selection cannot work in an unusual
+network setup, `--advertise-address 10.42.0.x` remains available as a manual
+troubleshooting override.
 
 ### Monitor the undocumented sensors
 
 ```sh
-cargo run --release -- \
-  --master http://10.42.0.1:11311 \
-  --advertise-address 10.42.0.124 \
-  monitor --seconds 30
+moorebot-scout monitor
 ```
 
 This subscribes to:
@@ -122,15 +118,13 @@ This subscribes to:
 
 The Scout starts several sensor publishers only when a subscriber connects, so
 their absence from an idle topic stream does not necessarily mean the hardware
-is disabled.
+is disabled. Monitoring continues until Ctrl-C by default; use
+`monitor --seconds 30` for a fixed-duration sample.
 
 ### Bridge the color camera
 
 ```sh
-cargo run --release -- \
-  --master http://10.42.0.1:11311 \
-  --advertise-address 10.42.0.124 \
-  camera-bridge
+moorebot-scout camera-bridge
 ```
 
 The bridge publishes standard compressed images on
@@ -143,11 +137,12 @@ standard, it is also a cleaner boundary for a later ROS 1-to-ROS 2 bridge.
 This example asks for 0.1 m/s forward motion for 500 ms, then sends a stop:
 
 ```sh
-cargo run --release -- \
-  --master http://10.42.0.1:11311 \
-  --advertise-address 10.42.0.124 \
-  drive --forward 0.1 --duration-ms 500
+moorebot-scout drive --forward 0.1 --duration-ms 500
 ```
+
+`drive` is a one-shot timed command and requires at least one of `--forward`,
+`--lateral`, or `--yaw`. Components can be combined for diagonal motion while
+turning.
 
 The public API uses standard mobile-base semantics, while the Scout firmware
 swaps the two linear axes:
@@ -155,7 +150,7 @@ swaps the two linear axes:
 | Meaning | Driver input | Scout `/cmd_vel` |
 |---|---:|---:|
 | Forward/backward | `forward_mps` | `linear.y` |
-| Left/right strafe | `lateral_mps` | `linear.x` |
+| Left/right strafe | `lateral_mps` | negated `linear.x` (Scout X points right) |
 | Counter-clockwise rotation | `yaw_rps` | `angular.z` |
 
 Commands are clamped to 0.47 m/s forward, 0.2 m/s lateral, and 2.9 rad/s yaw.
@@ -164,6 +159,39 @@ ceiling; the lower lateral and yaw values follow the supplied controller. A
 command is refused if no `/cmd_vel` subscriber connects within three seconds.
 This initial CLI also limits a single command to 60 seconds and its update rate
 to 1–100 Hz.
+
+### Drive with the keyboard and capture pictures
+
+First put the Scout on a stable stand with every wheel clear, then run:
+
+```sh
+moorebot-scout teleop
+```
+
+| Key | Action |
+|---|---|
+| W / S | forward / backward |
+| A / D | strafe left / right |
+| Q / E | turn left / right |
+| Up / Down | increase / decrease speed and control rate |
+| Space | save the latest JPEG to the Desktop |
+| Esc or Ctrl-C | stop and exit |
+
+The Scout motor controller mixes forward, lateral, and yaw commands across all
+four Mecanum wheels. Teleop starts at 40 Hz. Up/Down changes both velocity and
+the sampling/publication rate in 25% steps, within the Scout's velocity limits
+and a 100 Hz maximum; the new values are printed after each adjustment.
+
+The default turn rate is 2.0 rad/s. Lower yaw values can fall below the physical
+motor driver's minimum reliable duty threshold, which can make only one wheel
+polarity appear to start even though the firmware's pure-yaw mix addresses all
+four wheels.
+
+The terminal must remain focused. A key-event deadman stops stale motion, and a
+zero-velocity command is sent on normal exit and input/publisher errors. Space
+stops motion before writing the newest valid `/CoreNode/jpg` frame. Use
+`teleop --picture-directory PATH` (or `--screenshot-dir PATH`) to override the
+Desktop, and `teleop --help` for every speed and control option.
 
 ## Architecture
 
