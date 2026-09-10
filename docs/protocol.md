@@ -170,24 +170,18 @@ Notably, the supplemental Python `go home` experiment sends the literal name
 return-to-dock branch, so the experiment is not sufficient evidence of a
 working command.
 
-## Hardware validation checklist
+## Hardware test record
 
-Save the results by firmware version; Moorebot may have shipped incompatible
-graphs.
+The following paths have been exercised against a physical Scout:
 
-- Record `discover` output before and while each feature is subscribed.
-- Confirm the Scout can resolve and connect to the driver's advertised address.
-- Capture one raw message from every source topic as a future test fixture.
-- Verify forward, lateral, and yaw signs at low speed with wheels clear.
-- Measure the true velocity scale rather than assuming `/cmd_vel` units are
-  calibrated meters/radians per second.
-- Compare JPEG metadata dimensions to the decoded image dimensions.
-- Confirm ToF units, limits, invalid/no-return values, and physical sensor
-  direction.
-- Establish IMU frame orientation, covariance validity, rate, and calibration.
-- Compare packed light channels against environmental changes and IR-light mode.
-- Observe battery states while charging, full, and unplugged.
-- Query service headers before enabling any service client; test non-motion
-  services first.
-- Verify that a stop command reaches the motor node on disconnect and process
-  termination.
+- ROS graph discovery and two-way connections through the advertised address;
+- low-speed forward, lateral, and yaw motion, including stop behavior;
+- JPEG camera decoding and picture capture;
+- live IMU, time-of-flight, light, and battery subscriptions and decoding; and
+- zero-velocity publication on normal teleop exit.
+
+The driver reports the units declared by the ROS message definitions and does
+not add a physical calibration layer. Recorded-message fixtures, automated
+hardware-gated tests, cross-firmware comparison, and the currently unexposed
+service clients remain follow-up work rather than prerequisites for using the
+tested driver commands.

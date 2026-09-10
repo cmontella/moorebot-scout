@@ -38,7 +38,7 @@ flowchart LR
         SSH[Optional SSH client]
     end
 
-    WiFi[Wi-Fi Direct or trusted home router]
+    WiFi[Wi-Fi Direct or isolated robot SSID/VLAN]
 
     subgraph Robot[Moorebot Scout at its current network address]
         Master[ROS master on port 11311]
@@ -157,8 +157,8 @@ the program has been copied into the current folder.
 
 The Scout supports two network modes. **Wi-Fi Direct** is simplest for a class
 or first test: the Scout creates a network and the computer joins it. **Wi-Fi
-Router mode** makes the Scout join a trusted home network. The Rust driver works
-in either mode.
+Router mode** makes the Scout join an isolated network provided by a home
+router. The Rust driver works in either mode.
 
 ### Option A: use the Scout's Wi-Fi Direct network
 
@@ -187,7 +187,7 @@ Check whether the robot responds:
 A blocked ping does not always mean the robot is unreachable, but a successful
 reply confirms the basic route.
 
-### Option B: connect the Scout to a home router
+### Option B: connect the Scout to an isolated home-router network
 
 Use Moorebot's supported phone-app setup rather than editing Linux networking
 files over SSH. Editing `/etc/hostapd/hostapd.conf` only changes the network the
@@ -204,7 +204,17 @@ home router.
    network's password. The official manual calls this **Wi-Fi Router mode**.
    When the switch succeeds, the robot gives an alert and the router-mode Wi-Fi
    indicator remains on; a blinking indicator means it is not connected.
-5. Reconnect the phone and the computer to the same home network.
+5. Reconnect the phone and the computer to the same dedicated robot SSID or
+   VLAN. It must permit the computer and Scout to communicate with each other,
+   but should isolate both from other household devices. A separate router used
+   only for the Scout and controller is the simplest option when the home router
+   cannot create such a network.
+
+On Windows, open **Settings → Network & internet → Wi-Fi → the robot network**
+and set **Network profile type** to **Private** only when this is the dedicated,
+trusted robot network described above. This permits the Private-only firewall
+rule needed for ROS return connections. Never mark a public or untrusted
+network Private.
 
 These are the steps in Moorebot's [official Scout setup
 instructions](https://www.moorebot.com/products/scout-power-pack-scout-4-accessories-track-set-wand-laser-bumper).
@@ -214,9 +224,8 @@ shorter range is acceptable.
 The home router assigns the Scout an address, so it will normally **not** be
 `10.42.0.1`. Find the address in the router's connected-device or DHCP-client
 list. Depending on the firmware and router, the entry may be shown as
-`linaro-alip`, `robot_scout_xxxxxx`, or an unnamed device. Match its MAC address
-to the label or classroom robot list when necessary. You can also run `arp -a`
-after the phone app has contacted the robot and look for the Scout's MAC.
+`linaro-alip`, a manufacturer name, or an unnamed device. Match its MAC address
+to the label or classroom robot list when necessary.
 
 Suppose the router reports `192.168.1.73`. Confirm the ROS master and discover
 the robot with:
@@ -243,10 +252,12 @@ selects the computer's return address automatically, so no hosts-file or
 Scout a different address, look it up again or create a DHCP reservation for
 the Scout in the router settings.
 
-Do not use a guest network with client isolation, because it prevents the
-computer and Scout from opening ROS connections to each other. Do not expose or
-port-forward ports 11311 or 22 to the internet: ROS 1 and the factory SSH login
-do not authenticate traffic safely for a public network.
+Do not put the Scout on the ordinary household LAN. Use a dedicated SSID, VLAN,
+or separate router containing only the Scout and its controller. That network
+must allow those two clients to reach each other; typical guest-network client
+isolation blocks ROS. Do not expose or port-forward ports 11311 or 22 to the
+internet: ROS 1 and the factory SSH login do not authenticate traffic safely
+for a public network.
 
 ## 3. Optional: open an SSH diagnostic shell
 
@@ -353,9 +364,9 @@ Use `--seconds` when you want a fixed-duration sample:
 ./moorebot-scout monitor --seconds 30
 ```
 
-The displayed units follow the ROS message definitions and have been checked
-against live Scout sensor streams. Firmware revisions may still report values
-differently, so record the firmware version when reporting unexpected output.
+The sensor subscriptions and decoders have been exercised against live Scout
+streams. Values are displayed in the units declared by their ROS message types;
+the driver does not apply an additional physical calibration.
 
 ## 6. Perform the first motion test
 
@@ -492,9 +503,18 @@ correct network. In Wi-Fi Direct mode the address is normally
 the `--master` option. A VPN, firewall, guest-network isolation, campus network
 policy, or virtual-machine network can block ROS connections.
 
-On Windows, `Test-NetConnection 10.42.0.1 -Port 11311` checks the ROS master
-port. On macOS/Linux, `nc -vz 10.42.0.1 11311` performs the same check when
-Netcat is installed.
+In Wi-Fi Direct mode, check the default address:
+
+```text
+# Windows PowerShell
+Test-NetConnection 10.42.0.1 -Port 11311
+
+# macOS or Linux, when Netcat is installed
+nc -vz 10.42.0.1 11311
+```
+
+In Router mode, replace `10.42.0.1` in those commands with the address from the
+router and from the command's `--master` URI.
 
 ### The master responds, but subscriptions fail
 

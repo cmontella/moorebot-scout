@@ -4,11 +4,13 @@ The Moorebot Scout has two Wi-Fi modes:
 
 - **Wi-Fi Direct:** the Scout creates `robot_scout_xxxxxx`; the driver uses the
   robot at `10.42.0.1` automatically.
-- **Wi-Fi Router:** the Scout joins a trusted home router; the router chooses the
-  robot's address and the driver needs that address in `--master`.
+- **Wi-Fi Router:** the Scout joins an isolated network provided by a home
+  router; the router chooses the robot's address and the driver needs that
+  address in `--master`.
 
-Wi-Fi Direct is easiest for a first test. Router mode lets the computer keep its
-normal network connection while it controls the robot.
+Wi-Fi Direct is easiest for a first test. Router mode lets the computer retain
+network access while it controls the robot, but ROS traffic must remain on an
+isolated robot network.
 
 ## Configure Wi-Fi Router mode
 
@@ -20,7 +22,10 @@ normal network connection while it controls the robot.
    `r0123456`; replace it when the app requests a new device password.
 4. In the app, select the home Wi-Fi network and enter its password. The Scout
    switches to **Wi-Fi Router mode** after it connects successfully.
-5. Reconnect the phone and the computer to the same home network.
+5. Reconnect the phone and the computer to the same dedicated robot SSID or
+   VLAN. It must permit communication between the computer and Scout while
+   isolating them from other household devices. If the home router cannot do
+   that, use a separate router only for the Scout and controller.
 
 The router-mode indicator stays on while connected and blinks when the Scout
 cannot reach the router. The procedure comes from Moorebot's [official Scout
@@ -32,9 +37,9 @@ hotspot created by Wi-Fi Direct mode, not the home-router connection.
 ## Find the Scout's address
 
 Open the home router's connected-device or DHCP-client page. Look for
-`linaro-alip`, `robot_scout_xxxxxx`, or an unnamed device with the Scout's MAC
-address. If the phone app has recently contacted the robot, `arp -a` on the
-computer may also show the address next to its MAC.
+`linaro-alip`, a manufacturer name, or an unnamed device with the Scout's MAC
+address. The computer's ARP cache cannot discover an address it has never
+contacted, so use the router's DHCP data rather than relying on `arp -a`.
 
 For the supplied classroom fleet, use this map:
 
@@ -79,12 +84,16 @@ reservation for the Scout's MAC in the router settings.
 
 ## Network safety and troubleshooting
 
-- Use a trusted private network. ROS 1 does not authenticate peers.
+- Use a dedicated SSID, VLAN, or separate router containing only the Scout and
+  its controller. ROS 1 does not authenticate peers.
 - Never port-forward ROS port 11311 or SSH port 22 to the internet.
-- Avoid guest Wi-Fi and client isolation; both can prevent devices on the same
-  router from connecting to one another.
-- On Windows, allow `moorebot-scout.exe` on **Private** networks only when the
-  firewall asks. Do not allow it on Public networks.
+- The robot network must permit the Scout and controller to contact each other.
+  Typical guest Wi-Fi blocks this with client isolation and will not work.
+- On Windows, open **Settings → Network & internet → Wi-Fi → the robot network**
+  and set **Network profile type** to **Private** only if this is the dedicated,
+  trusted robot network described above. Then allow `moorebot-scout.exe` on
+  **Private** networks when the firewall asks. Do not allow it on Public
+  networks or mark an untrusted network Private.
 - If the app cannot transfer the Wi-Fi settings, switch back to Wi-Fi Direct
   and retry near the router. Moorebot documents support for WPA2 and both 2.4
   GHz and 5 GHz, with 5 GHz preferred when range permits.

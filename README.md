@@ -14,8 +14,9 @@ the crate does **not** require a local ROS installation.
 
 New to Rust, ROS, or networked robots? Follow the
 [student getting-started guide](docs/getting-started.md). It explains every
-prerequisite, how to connect directly or through a home router on Windows,
-macOS, and Linux, what output to expect, and how to drive safely.
+prerequisite, how to connect directly or through an isolated home-router
+network on Windows, macOS, and Linux, what output to expect, and how to drive
+safely.
 
 For normal use, download the package for your computer from [GitHub
 Releases](https://github.com/cmontella/moorebot-scout/releases). Each package
@@ -86,7 +87,7 @@ can be run through Cargo as shown below.
 ## Connect to a Scout
 
 1. Connect the computer to the Scout's own Wi-Fi, or put the Scout and computer
-   on the same trusted home network using the [home-network
+   on the same isolated robot SSID/VLAN using the [home-network
    guide](docs/home-network.md).
 2. Run the executable. It confirms that the ROS master is reachable, asks the
    operating system which local address routes to it, and handles the Scout's
@@ -245,7 +246,7 @@ from a published dependency; the remaining work is tracked in [issue
 
 No first-party source was copied into this crate. See
 [`docs/protocol.md`](docs/protocol.md) for the decoded layout, discovered feature
-map, security/resource-limit audit, and hardware-validation checklist.
+map, security/resource-limit audit, and hardware test record.
 
 This crate is not affiliated with or endorsed by Moorebot or Pilot Labs.
 
@@ -258,19 +259,15 @@ risks, and private reporting instructions.
 
 ## Roadmap
 
-1. [Capture a `discover` report and sample messages from a real
-   Scout](https://github.com/cmontella/moorebot-scout/issues/1).
-2. [Validate motion, camera, sensor units, and firmware
-   behavior](https://github.com/cmontella/moorebot-scout/issues/2).
-3. [Add recorded-message fixtures and hardware-gated integration
+1. [Add recorded-message fixtures and hardware-gated integration
    tests](https://github.com/cmontella/moorebot-scout/issues/3).
-4. [Implement typed clients for Scout control and navigation
+2. [Implement typed clients for Scout control and navigation
    services](https://github.com/cmontella/moorebot-scout/issues/4).
-5. [Add H.264, AAC, and detection stream
+3. [Add H.264, AAC, and detection stream
    support](https://github.com/cmontella/moorebot-scout/issues/5).
-6. [Add a ROS 2 integration
+4. [Add a ROS 2 integration
    path](https://github.com/cmontella/moorebot-scout/issues/6).
-7. [Prepare the crate for its first crates.io
+5. [Prepare the crate for its first crates.io
    release](https://github.com/cmontella/moorebot-scout/issues/7).
 
 ## License
