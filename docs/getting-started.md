@@ -304,10 +304,16 @@ passwords into an issue or discovery capture.
 
 ## 4. Discover the robot
 
-Run this from the project directory:
+Run this from the project directory. The remaining sections show both network
+modes; replace the example Router-mode address with the one assigned to your
+Scout:
 
 ```text
+# Wi-Fi Direct
 ./moorebot-scout discover
+
+# Wi-Fi Router mode
+./moorebot-scout --master http://192.168.1.73:11311 discover
 ```
 
 The command asks the Scout's ROS master for every published topic and
@@ -330,7 +336,7 @@ Your list may differ with firmware version and robot state. `Read`, `Write`, or
 works.
 
 The computer address and robot name in your output will differ. The name is a
-best-effort match against the 15 MAC addresses in the supplied classroom list.
+best-effort match against the MAC addresses in the supplied classroom fleet.
 If a MAC address is not visible in the operating system's current Wi-Fi or ARP
 information, the driver says that the classroom name was not detected and
 continues normally. The name is only a convenience label; never use it as a
@@ -341,7 +347,11 @@ security check.
 Monitoring now continues until you press Ctrl-C:
 
 ```text
+# Wi-Fi Direct
 ./moorebot-scout monitor
+
+# Wi-Fi Router mode
+./moorebot-scout --master http://192.168.1.73:11311 monitor
 ```
 
 Representative output looks like this; your numbers will change continuously:
@@ -361,7 +371,11 @@ few seconds.
 Use `--seconds` when you want a fixed-duration sample:
 
 ```text
+# Wi-Fi Direct
 ./moorebot-scout monitor --seconds 30
+
+# Wi-Fi Router mode
+./moorebot-scout --master http://192.168.1.73:11311 monitor --seconds 30
 ```
 
 The sensor subscriptions and decoders have been exercised against live Scout
@@ -381,7 +395,11 @@ Complete this checklist first:
 Then request only 0.05 m/s forward for 250 milliseconds:
 
 ```text
+# Wi-Fi Direct
 ./moorebot-scout drive --forward 0.05 --duration-ms 250
+
+# Wi-Fi Router mode
+./moorebot-scout --master http://192.168.1.73:11311 drive --forward 0.05 --duration-ms 250
 ```
 
 The driver refuses to move if no `/cmd_vel` subscriber connects within three
@@ -392,19 +410,22 @@ software safeguards, not a replacement for the physical precautions above.
 Once the first command is understood, these are separate low-speed examples:
 
 ```text
-# Ask for backward motion
+# Wi-Fi Direct: ask for backward motion
 ./moorebot-scout drive --forward -0.05 --duration-ms 250
 
-# Ask for leftward motion
+# Wi-Fi Direct: ask for leftward motion
 ./moorebot-scout drive --lateral 0.05 --duration-ms 250
 
-# Ask for a counter-clockwise turn
+# Wi-Fi Direct: ask for a counter-clockwise turn
 ./moorebot-scout drive --yaw 2.0 --duration-ms 250
+
+# Wi-Fi Router mode: use the same --master prefix with any drive options
+./moorebot-scout --master http://192.168.1.73:11311 drive --yaw 2.0 --duration-ms 250
 ```
 
 Those direction names are the driver's intended standard coordinate semantics.
 Confirm the real wheel directions while the robot is still on the stand and
-report discrepancies in the hardware-validation issue.
+report any firmware-specific discrepancy with the Scout firmware version.
 
 ## 7. Drive with WASD and save pictures
 
@@ -417,10 +438,15 @@ Start the keyboard controller. Teleop is the default, so the shortest command
 is:
 
 ```text
+# Wi-Fi Direct
 ./moorebot-scout
+
+# Wi-Fi Router mode
+./moorebot-scout --master http://192.168.1.73:11311
 ```
 
-`./moorebot-scout teleop` is equivalent and is useful when adding options.
+`./moorebot-scout teleop` is equivalent in Direct mode. In Router mode, use
+`./moorebot-scout --master http://192.168.1.73:11311 teleop`.
 
 | Key | Result |
 |---|---|
@@ -447,7 +473,11 @@ prints a message and does not create a file. To use a different folder or lower
 speeds, add options after `teleop`:
 
 ```text
+# Wi-Fi Direct
 ./moorebot-scout teleop --speed 0.05 --strafe-speed 0.05 --picture-directory scout-pictures
+
+# Wi-Fi Router mode
+./moorebot-scout --master http://192.168.1.73:11311 teleop --speed 0.05 --strafe-speed 0.05 --picture-directory scout-pictures
 ```
 
 The base forward and strafe speeds are 0.10 m/s. The default turn rate is 2.0
@@ -466,7 +496,11 @@ Run `./moorebot-scout teleop --help` to see the control summary and every option
 Start the bridge in one terminal:
 
 ```text
+# Wi-Fi Direct
 ./moorebot-scout camera-bridge
+
+# Wi-Fi Router mode
+./moorebot-scout --master http://192.168.1.73:11311 camera-bridge
 ```
 
 It converts the Scout-specific `/CoreNode/jpg` messages into standard ROS 1

@@ -1,7 +1,7 @@
 # Moorebot Scout protocol notes
 
-These notes separate observed or source-backed facts from behavior that still
-needs validation on a physical robot.
+These notes record source-backed protocol facts and the behavior exercised on a
+physical robot.
 
 ## Source baseline
 
