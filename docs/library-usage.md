@@ -112,6 +112,6 @@ transport. Both configurations are tested on Linux, macOS, and Windows.
 
 ## API stability
 
-Version `0.1.0` is an initial hardware-unvalidated API. Expect types and method
-names to change as real Scout captures reveal firmware differences. Pin a Git
-revision for classroom assignments that must remain reproducible.
+The driver has been tested with a physical Scout. The Rust API is still pre-1.0,
+so types and method names may change as more firmware capabilities are exposed.
+Pin a Git revision for classroom assignments that must remain reproducible.

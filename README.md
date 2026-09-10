@@ -6,16 +6,16 @@ An independent Rust driver and protocol library for the Moorebot Scout. It
 connects directly to the ROS 1 master already running on the robot, so building
 the crate does **not** require a local ROS installation.
 
-> Status: discovery, camera capture, and interactive motion have been exercised
-> against a physical Scout. Hardware behavior remains safety-sensitive: put the
-> robot on blocks for the first motion test and keep a hand on its power button.
+> Discovery, sensor monitoring, camera capture, and interactive motion have been
+> tested against a physical Scout. As with any mobile robot, use a clear testing
+> area and keep the power button within reach.
 
 ## Start here
 
 New to Rust, ROS, or networked robots? Follow the
 [student getting-started guide](docs/getting-started.md). It explains every
-prerequisite, how to find the correct network address on Windows, macOS, and
-Linux, what output to expect, and how to perform a cautious first hardware test.
+prerequisite, how to connect directly or through a home router on Windows,
+macOS, and Linux, what output to expect, and how to drive safely.
 
 For normal use, download the package for your computer from [GitHub
 Releases](https://github.com/cmontella/moorebot-scout/releases). Each package
@@ -29,14 +29,14 @@ After extracting it, connect to the Scout network and run the executable:
 On Windows, use `./moorebot-scout.exe` in PowerShell. With no command the
 program finds the Scout and starts keyboard control: W/S drives, A/D strafes,
 Q/E turns, Up/Down changes speed and update rate, Space saves the latest camera
-image to the Desktop, and Escape stops and exits. Releases are currently
-unsigned hardware previews; read the safety and download notes in the student
-guide before running one.
+image to the Desktop, and Escape stops and exits. Release binaries are currently
+unsigned; read the safety and download notes in the student guide before
+running one.
 
 If you want to use the crate from another Rust program, see the
 [library examples](docs/library-usage.md).
 
-## What works in this first slice
+## What works today
 
 - Enumerate the live ROS topics and services, with annotations for known Scout
   interfaces.
@@ -54,7 +54,7 @@ If you want to use the crate from another Rust program, see the
 
 The H.264 camera, AAC microphone, object/motion detection, iBeacon, odometry,
 IR light controls, autonomous navigation, docking, and onboard recording are
-mapped but deliberately not presented as working APIs until hardware testing.
+mapped but are not yet exposed as driver commands.
 
 ## Build from source
 
@@ -85,7 +85,9 @@ can be run through Cargo as shown below.
 
 ## Connect to a Scout
 
-1. Connect the computer to the same network as the Scout.
+1. Connect the computer to the Scout's own Wi-Fi, or put the Scout and computer
+   on the same trusted home network using the [home-network
+   guide](docs/home-network.md).
 2. Run the executable. It confirms that the ROS master is reachable, asks the
    operating system which local address routes to it, and handles the Scout's
    internal `linaro-alip` hostname inside the process. No hosts-file edit is
@@ -100,10 +102,16 @@ List everything the firmware currently exposes:
 moorebot-scout discover
 ```
 
-The default ROS master is `http://10.42.0.1:11311`. Use `--master` for a
-different robot address. If automatic route selection cannot work in an unusual
-network setup, `--advertise-address 10.42.0.x` remains available as a manual
-troubleshooting override.
+The default ROS master is `http://10.42.0.1:11311`, which is the normal address
+in Wi-Fi Direct mode. A home router assigns the Scout a different address; pass
+it with `--master`, for example:
+
+```sh
+moorebot-scout --master http://192.168.1.73:11311
+```
+
+If automatic route selection cannot work in an unusual network setup,
+`--advertise-address` remains available as a manual troubleshooting override.
 
 ### Monitor the undocumented sensors
 
