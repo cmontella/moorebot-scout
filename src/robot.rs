@@ -69,6 +69,10 @@ pub const KNOWN_SCOUTS: &[KnownScout] = &[
         name: "Óin",
         mac_address: "d4:9c:dd:e9:b9:da",
     },
+    KnownScout {
+        name: "Dain",
+        mac_address: "d4:9c:dd:ea:5a:d8",
+    },
 ];
 
 /// Finds a known Scout from a full MAC address or `robot_scout_XXXXXX` SSID.
@@ -151,6 +155,7 @@ mod tests {
         assert_eq!(known_scout("D4-9C-DD-EB-0C-F6").unwrap().name, "Kíli");
         assert_eq!(known_scout("d49cddeb0cf6").unwrap().name, "Kíli");
         assert_eq!(known_scout("robot_scout_EB0CF6").unwrap().name, "Kíli");
+        assert_eq!(known_scout("robot_scout_EA5AD8").unwrap().name, "Dain");
     }
 
     #[test]

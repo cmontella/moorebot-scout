@@ -38,9 +38,9 @@ flowchart LR
         SSH[Optional SSH client]
     end
 
-    WiFi[Scout Wi-Fi or trusted local network]
+    WiFi[Wi-Fi Direct or isolated robot SSID/VLAN]
 
-    subgraph Robot[Moorebot Scout at 10.42.0.1]
+    subgraph Robot[Moorebot Scout at its current network address]
         Master[ROS master on port 11311]
         Motors[Motor node: /cmd_vel]
         Sensors[IMU, ToF, light, battery nodes]
@@ -69,8 +69,8 @@ diagnostics.
 
 ## Safety first
 
-The driver has offline tests, but its motion directions and sensor units have
-not yet been validated on a physical Scout.
+The driver, motion directions, camera capture, and live sensor paths have been
+tested with a physical Scout. Normal mobile-robot safety still applies.
 
 - Do discovery and sensor exercises before motion.
 - For the first motion test, place the Scout on a stable stand with every wheel
@@ -87,7 +87,7 @@ change software on the robot.
 
 | Term | Plain-language meaning |
 |---|---|
-| ROS master | The directory service on the Scout. Its usual address is `http://10.42.0.1:11311`. |
+| ROS master | The directory service on the Scout. It uses port `11311`; the host is `10.42.0.1` in Wi-Fi Direct mode or an address assigned by the home router. |
 | Node | One program participating in ROS, such as the Scout motor controller or this driver. |
 | Topic | A named stream of messages. `/cmd_vel` carries movement commands. |
 | Advertised address | Your computer's address on the Scout network. The robot uses it to connect back to the driver. |
@@ -153,16 +153,21 @@ The built program is `target/release/moorebot-scout` on macOS/Linux or
 `target/release/moorebot-scout.exe` on Windows. The rest of this guide assumes
 the program has been copied into the current folder.
 
-## 2. Join the Scout network
+## 2. Put the computer and Scout on the same network
+
+The Scout supports two network modes. **Wi-Fi Direct** is simplest for a class
+or first test: the Scout creates a network and the computer joins it. **Wi-Fi
+Router mode** makes the Scout join an isolated network provided by a home
+router. The Rust driver works in either mode.
+
+### Option A: use the Scout's Wi-Fi Direct network
 
 1. Power on the Scout.
 2. Connect your computer to the Wi-Fi network created by the Scout. The
    factory-default name is `robot_scout_xxxxxx` and the factory-default Wi-Fi
    password is `r0123456`, according to the [official Scout
    FAQ](https://www.moorebot.com/pages/faq-for-moorebot-scout-2). The FAQ says
-   to change this default after the first login. A Scout already configured in
-   access-point mode may instead be on the same trusted local network as your
-   computer.
+   to change this default after the first login.
 3. Confirm the computer received an address on that network.
 
 On Windows, run `ipconfig` and find the `IPv4 Address` under the active Wi-Fi
@@ -181,6 +186,78 @@ Check whether the robot responds:
 
 A blocked ping does not always mean the robot is unreachable, but a successful
 reply confirms the basic route.
+
+### Option B: connect the Scout to an isolated home-router network
+
+Use Moorebot's supported phone-app setup rather than editing Linux networking
+files over SSH. Editing `/etc/hostapd/hostapd.conf` only changes the network the
+Scout creates in Wi-Fi Direct mode; it does not configure the Scout to join a
+home router.
+
+1. Install the **Moorebot Scout** app on an Android or iOS phone and create the
+   Moorebot account requested by the app.
+2. Put the Scout in its charging station, power it on, and select Wi-Fi Direct
+   mode with the physical Wi-Fi mode button.
+3. In the phone's Wi-Fi settings, join `robot_scout_xxxxxx`. The factory
+   password is `r0123456`; the app asks you to replace it during initial setup.
+4. Return to the Scout app, choose the home Wi-Fi network, and enter that
+   network's password. The official manual calls this **Wi-Fi Router mode**.
+   When the switch succeeds, the robot gives an alert and the router-mode Wi-Fi
+   indicator remains on; a blinking indicator means it is not connected.
+5. Reconnect the phone and the computer to the same dedicated robot SSID or
+   VLAN. It must permit the computer and Scout to communicate with each other,
+   but should isolate both from other household devices. A separate router used
+   only for the Scout and controller is the simplest option when the home router
+   cannot create such a network.
+
+On Windows, open **Settings → Network & internet → Wi-Fi → the robot network**
+and set **Network profile type** to **Private** only when this is the dedicated,
+trusted robot network described above. This permits the Private-only firewall
+rule needed for ROS return connections. Never mark a public or untrusted
+network Private.
+
+These are the steps in Moorebot's [official Scout setup
+instructions](https://www.moorebot.com/products/scout-power-pack-scout-4-accessories-track-set-wand-laser-bumper).
+Scout supports WPA2 and 2.4 GHz or 5 GHz Wi-Fi, with 5 GHz preferred when its
+shorter range is acceptable.
+
+The home router assigns the Scout an address, so it will normally **not** be
+`10.42.0.1`. Find the address in the router's connected-device or DHCP-client
+list. Depending on the firmware and router, the entry may be shown as
+`linaro-alip`, a manufacturer name, or an unnamed device. Match its MAC address
+to the label or classroom robot list when necessary.
+
+Suppose the router reports `192.168.1.73`. Confirm the ROS master and discover
+the robot with:
+
+```text
+# macOS or Linux
+./moorebot-scout --master http://192.168.1.73:11311 discover
+
+# Windows PowerShell
+./moorebot-scout.exe --master http://192.168.1.73:11311 discover
+```
+
+To start keyboard driving in router mode, omit the final command but keep the
+master address:
+
+```text
+./moorebot-scout --master http://192.168.1.73:11311
+```
+
+Use that `--master` option on every driver invocation while the Scout is in
+router mode. The driver maps the firmware's `linaro-alip` name internally and
+selects the computer's return address automatically, so no hosts-file or
+`--advertise-address` change is normally needed. If the router later gives the
+Scout a different address, look it up again or create a DHCP reservation for
+the Scout in the router settings.
+
+Do not put the Scout on the ordinary household LAN. Use a dedicated SSID, VLAN,
+or separate router containing only the Scout and its controller. That network
+must allow those two clients to reach each other; typical guest-network client
+isolation blocks ROS. Do not expose or port-forward ports 11311 or 22 to the
+internet: ROS 1 and the factory SSH login do not authenticate traffic safely
+for a public network.
 
 ## 3. Optional: open an SSH diagnostic shell
 
@@ -201,6 +278,9 @@ macOS/Linux terminal, try:
 ```text
 ssh linaro@10.42.0.1
 ```
+
+In Wi-Fi Router mode, replace `10.42.0.1` with the address assigned by the
+router. SSH is not required to configure Router mode or run the Rust driver.
 
 On the first connection, SSH asks whether you trust the host key. Verify that
 you are connected directly to the expected Scout before accepting it. The
@@ -224,10 +304,16 @@ passwords into an issue or discovery capture.
 
 ## 4. Discover the robot
 
-Run this from the project directory:
+Run this from the project directory. The remaining sections show both network
+modes; replace the example Router-mode address with the one assigned to your
+Scout:
 
 ```text
+# Wi-Fi Direct
 ./moorebot-scout discover
+
+# Wi-Fi Router mode
+./moorebot-scout --master http://192.168.1.73:11311 discover
 ```
 
 The command asks the Scout's ROS master for every published topic and
@@ -250,7 +336,7 @@ Your list may differ with firmware version and robot state. `Read`, `Write`, or
 works.
 
 The computer address and robot name in your output will differ. The name is a
-best-effort match against the 15 MAC addresses in the supplied classroom list.
+best-effort match against the MAC addresses in the supplied classroom fleet.
 If a MAC address is not visible in the operating system's current Wi-Fi or ARP
 information, the driver says that the classroom name was not detected and
 continues normally. The name is only a convenience label; never use it as a
@@ -261,7 +347,11 @@ security check.
 Monitoring now continues until you press Ctrl-C:
 
 ```text
+# Wi-Fi Direct
 ./moorebot-scout monitor
+
+# Wi-Fi Router mode
+./moorebot-scout --master http://192.168.1.73:11311 monitor
 ```
 
 Representative output looks like this; your numbers will change continuously:
@@ -281,11 +371,16 @@ few seconds.
 Use `--seconds` when you want a fixed-duration sample:
 
 ```text
+# Wi-Fi Direct
 ./moorebot-scout monitor --seconds 30
+
+# Wi-Fi Router mode
+./moorebot-scout --master http://192.168.1.73:11311 monitor --seconds 30
 ```
 
-The displayed units follow the ROS message definitions, but physical scaling,
-orientation, and firmware differences still require hardware validation.
+The sensor subscriptions and decoders have been exercised against live Scout
+streams. Values are displayed in the units declared by their ROS message types;
+the driver does not apply an additional physical calibration.
 
 ## 6. Perform the first motion test
 
@@ -300,7 +395,11 @@ Complete this checklist first:
 Then request only 0.05 m/s forward for 250 milliseconds:
 
 ```text
+# Wi-Fi Direct
 ./moorebot-scout drive --forward 0.05 --duration-ms 250
+
+# Wi-Fi Router mode
+./moorebot-scout --master http://192.168.1.73:11311 drive --forward 0.05 --duration-ms 250
 ```
 
 The driver refuses to move if no `/cmd_vel` subscriber connects within three
@@ -311,19 +410,22 @@ software safeguards, not a replacement for the physical precautions above.
 Once the first command is understood, these are separate low-speed examples:
 
 ```text
-# Ask for backward motion
+# Wi-Fi Direct: ask for backward motion
 ./moorebot-scout drive --forward -0.05 --duration-ms 250
 
-# Ask for leftward motion
+# Wi-Fi Direct: ask for leftward motion
 ./moorebot-scout drive --lateral 0.05 --duration-ms 250
 
-# Ask for a counter-clockwise turn
+# Wi-Fi Direct: ask for a counter-clockwise turn
 ./moorebot-scout drive --yaw 2.0 --duration-ms 250
+
+# Wi-Fi Router mode: use the same --master prefix with any drive options
+./moorebot-scout --master http://192.168.1.73:11311 drive --yaw 2.0 --duration-ms 250
 ```
 
 Those direction names are the driver's intended standard coordinate semantics.
 Confirm the real wheel directions while the robot is still on the stand and
-report discrepancies in the hardware-validation issue.
+report any firmware-specific discrepancy with the Scout firmware version.
 
 ## 7. Drive with WASD and save pictures
 
@@ -336,10 +438,15 @@ Start the keyboard controller. Teleop is the default, so the shortest command
 is:
 
 ```text
+# Wi-Fi Direct
 ./moorebot-scout
+
+# Wi-Fi Router mode
+./moorebot-scout --master http://192.168.1.73:11311
 ```
 
-`./moorebot-scout teleop` is equivalent and is useful when adding options.
+`./moorebot-scout teleop` is equivalent in Direct mode. In Router mode, use
+`./moorebot-scout --master http://192.168.1.73:11311 teleop`.
 
 | Key | Result |
 |---|---|
@@ -366,7 +473,11 @@ prints a message and does not create a file. To use a different folder or lower
 speeds, add options after `teleop`:
 
 ```text
+# Wi-Fi Direct
 ./moorebot-scout teleop --speed 0.05 --strafe-speed 0.05 --picture-directory scout-pictures
+
+# Wi-Fi Router mode
+./moorebot-scout --master http://192.168.1.73:11311 teleop --speed 0.05 --strafe-speed 0.05 --picture-directory scout-pictures
 ```
 
 The base forward and strafe speeds are 0.10 m/s. The default turn rate is 2.0
@@ -385,7 +496,11 @@ Run `./moorebot-scout teleop --help` to see the control summary and every option
 Start the bridge in one terminal:
 
 ```text
+# Wi-Fi Direct
 ./moorebot-scout camera-bridge
+
+# Wi-Fi Router mode
+./moorebot-scout --master http://192.168.1.73:11311 camera-bridge
 ```
 
 It converts the Scout-specific `/CoreNode/jpg` messages into standard ROS 1
@@ -414,15 +529,26 @@ trusted, isolated robot network because ROS 1 does not authenticate publishers.
 Close and reopen the terminal after installation. If that does not help,
 re-run the relevant installer and allow it to update your PATH.
 
-### The driver cannot contact `10.42.0.1:11311`
+### The driver cannot contact the ROS master
 
 Confirm that the Scout is powered on and that the computer is connected to the
-correct network. Recheck the robot address. A VPN, firewall, campus network
+correct network. In Wi-Fi Direct mode the address is normally
+`10.42.0.1:11311`. In Wi-Fi Router mode, recheck the router-assigned address and
+the `--master` option. A VPN, firewall, guest-network isolation, campus network
 policy, or virtual-machine network can block ROS connections.
 
-On Windows, `Test-NetConnection 10.42.0.1 -Port 11311` checks the ROS master
-port. On macOS/Linux, `nc -vz 10.42.0.1 11311` performs the same check when
-Netcat is installed.
+In Wi-Fi Direct mode, check the default address:
+
+```text
+# Windows PowerShell
+Test-NetConnection 10.42.0.1 -Port 11311
+
+# macOS or Linux, when Netcat is installed
+nc -vz 10.42.0.1 11311
+```
+
+In Router mode, replace `10.42.0.1` in those commands with the address from the
+router and from the command's `--master` URI.
 
 ### The master responds, but subscriptions fail
 
