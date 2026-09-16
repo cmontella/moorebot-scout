@@ -69,6 +69,29 @@ impl ScoutTwist {
 }
 
 impl Velocity {
+    /// Create a planar velocity from `[vx, vy, vtheta]` components.
+    ///
+    /// `vx` is forward speed in meters per second, `vy` is leftward speed in
+    /// meters per second, and `vtheta` is counter-clockwise angular speed in
+    /// radians per second.
+    pub const fn new(vx_mps: f64, vy_mps: f64, vtheta_rps: f64) -> Self {
+        Self {
+            forward_mps: vx_mps,
+            lateral_mps: vy_mps,
+            yaw_rps: vtheta_rps,
+        }
+    }
+
+    /// Return this command as `[vx, vy, vtheta]`.
+    pub const fn as_vector(self) -> [f64; 3] {
+        [self.forward_mps, self.lateral_mps, self.yaw_rps]
+    }
+
+    /// Return the planar `(v, omega)` pair, where `v` is `[vx, vy]`.
+    pub const fn as_v_omega(self) -> ([f64; 2], f64) {
+        ([self.forward_mps, self.lateral_mps], self.yaw_rps)
+    }
+
     /// Clamp a standard velocity command and map it to the Scout's swapped
     /// linear axes (`linear.y` is forward and Scout `linear.x` points right).
     pub fn to_scout_twist(self, limits: MotionLimits) -> Result<ScoutTwist, MotionError> {
@@ -89,6 +112,24 @@ impl Velocity {
             angular_z: self.yaw_rps.clamp(-limits.max_yaw_rps, limits.max_yaw_rps),
             ..ScoutTwist::zero()
         })
+    }
+}
+
+impl From<[f64; 3]> for Velocity {
+    fn from([vx_mps, vy_mps, vtheta_rps]: [f64; 3]) -> Self {
+        Self::new(vx_mps, vy_mps, vtheta_rps)
+    }
+}
+
+impl From<Velocity> for [f64; 3] {
+    fn from(velocity: Velocity) -> Self {
+        velocity.as_vector()
+    }
+}
+
+impl From<([f64; 2], f64)> for Velocity {
+    fn from((velocity, omega): ([f64; 2], f64)) -> Self {
+        Self::new(velocity[0], velocity[1], omega)
     }
 }
 

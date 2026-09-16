@@ -7,7 +7,7 @@
 use crate::{
     codec::{write_bytes, write_string, write_u32},
     frame::{MAX_FRAME_DATA_BYTES, ScoutFrame, StreamType},
-    motion::ScoutTwist,
+    motion::{MotionLimits, ScoutTwist, Velocity},
     sensors::{MAX_BATTERY_STATUS_VALUES, MAX_FRAME_ID_BYTES},
 };
 use rosrust::{
@@ -285,6 +285,22 @@ impl TwistPublisher {
         self.inner
             .send(RawMessage(twist.encode_ros()))
             .map_err(|error| Ros1Error(error.to_string()))
+    }
+
+    /// Clamp, map, and send a standard planar velocity command.
+    ///
+    /// Arrays are accepted in `[vx, vy, vtheta]` order. A `(v, omega)` pair
+    /// such as `([vx, vy], omega)` is accepted as well.
+    pub fn send_velocity(
+        &self,
+        velocity: impl Into<Velocity>,
+        limits: MotionLimits,
+    ) -> Result<(), Ros1Error> {
+        let twist = velocity
+            .into()
+            .to_scout_twist(limits)
+            .map_err(|error| Ros1Error(error.to_string()))?;
+        self.send(twist)
     }
 
     pub fn subscriber_count(&self) -> usize {

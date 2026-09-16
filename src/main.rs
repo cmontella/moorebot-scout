@@ -34,11 +34,12 @@ use std::{
 
 const TELEOP_INITIAL_REPEAT_GRACE: Duration = Duration::from_millis(1_100);
 const TELEOP_REPEAT_DEADMAN: Duration = Duration::from_millis(350);
+const TELEOP_KEY_RELEASE_DEADMAN: Duration = Duration::from_secs(3);
 const SPEED_SCALE_STEP: f64 = 0.25;
 const MIN_SPEED_SCALE: f64 = 0.25;
 const MAX_SYSTEM_COMMAND_OUTPUT_BYTES: u64 = 64 * 1024;
 const SYSTEM_COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
-const TELEOP_HELP: &str = "Controls:\n  W / S       forward / backward\n  A / D       strafe left / right\n  Q / E       turn left / right\n  Up / Down   increase / decrease speed and control rate\n  Space       save the latest camera frame to the Desktop\n  Esc/Ctrl-C  stop and exit";
+const TELEOP_HELP: &str = "Controls (movement keys can be held together):\n  W / S       forward / backward (vx)\n  A / D       strafe left / right (vy)\n  Q / E       turn left / right (vtheta)\n  Up / Down   increase / decrease speed and control rate\n  Space       save the latest camera frame to the Desktop\n  Esc/Ctrl-C  stop and exit";
 
 #[derive(Parser)]
 #[command(version, about = "Rust driver tools for the Moorebot Scout")]
@@ -65,6 +66,8 @@ enum Command {
     Discover,
     /// Send a bounded velocity command, followed by an unconditional stop.
     Drive(DriveArgs),
+    /// Send `[vx, vy, vtheta]` for a bounded time, followed by a stop.
+    Move(MoveArgs),
     /// Drive with WASD and save the latest camera picture with Space.
     Teleop(TeleopArgs),
     /// Print decoded IMU, range, light, and battery samples.
@@ -87,6 +90,25 @@ struct DriveArgs {
     /// Duration of the command. The driver sends zero velocity afterward.
     #[arg(long, default_value_t = 500)]
     duration_ms: u64,
+    /// Command publication frequency.
+    #[arg(long, default_value_t = 10.0)]
+    rate_hz: f64,
+}
+
+#[derive(Args)]
+struct MoveArgs {
+    /// Forward velocity in meters per second.
+    #[arg(value_name = "VX", allow_hyphen_values = true)]
+    vx: f64,
+    /// Leftward velocity in meters per second.
+    #[arg(value_name = "VY", allow_hyphen_values = true)]
+    vy: f64,
+    /// Counter-clockwise angular velocity in radians per second.
+    #[arg(value_name = "VTHETA", allow_hyphen_values = true)]
+    vtheta: f64,
+    /// Duration of the command in seconds. The driver sends zero afterward.
+    #[arg(long, default_value_t = 0.5, allow_hyphen_values = true)]
+    seconds: f64,
     /// Command publication frequency.
     #[arg(long, default_value_t = 10.0)]
     rate_hz: f64,
@@ -177,6 +199,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
         node_name: match &command {
             Command::Discover => "moorebot_scout_discover",
             Command::Drive(_) => "moorebot_scout_drive",
+            Command::Move(_) => "moorebot_scout_move",
             Command::Teleop(_) => "moorebot_scout_teleop",
             Command::Monitor(_) => "moorebot_scout_monitor",
             Command::CameraBridge(_) => "moorebot_scout_camera_bridge",
@@ -188,6 +211,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
     match command {
         Command::Discover => discover(&config),
         Command::Drive(args) => drive(&config, args),
+        Command::Move(args) => move_velocity(&config, args),
         Command::Teleop(args) => teleop(&config, args),
         Command::Monitor(args) => monitor(&config, args),
         Command::CameraBridge(args) => camera_bridge(&config, args),
@@ -241,28 +265,48 @@ fn next_motion_wait(period: Duration, now: Instant, deadline: Instant) -> Option
 }
 
 fn drive(config: &Ros1Config, args: DriveArgs) -> Result<(), Box<dyn Error>> {
-    if args.duration_ms == 0 {
-        return Err("--duration-ms must be greater than zero".into());
+    send_velocity(
+        config,
+        Velocity::new(args.forward, args.lateral, args.yaw),
+        Duration::from_millis(args.duration_ms),
+        args.rate_hz,
+    )
+}
+
+fn move_velocity(config: &Ros1Config, args: MoveArgs) -> Result<(), Box<dyn Error>> {
+    if !args.seconds.is_finite() || args.seconds <= 0.0 || args.seconds > 60.0 {
+        return Err("--seconds must be finite, greater than zero, and no more than 60".into());
     }
-    if args.duration_ms > 60_000 {
-        return Err("--duration-ms may not exceed 60000 in this safety-oriented CLI".into());
+    send_velocity(
+        config,
+        [args.vx, args.vy, args.vtheta].into(),
+        Duration::from_secs_f64(args.seconds),
+        args.rate_hz,
+    )
+}
+
+fn send_velocity(
+    config: &Ros1Config,
+    velocity: Velocity,
+    duration: Duration,
+    rate_hz: f64,
+) -> Result<(), Box<dyn Error>> {
+    if duration.is_zero() {
+        return Err("motion duration must be greater than zero".into());
     }
-    if !args.rate_hz.is_finite() || !(1.0..=100.0).contains(&args.rate_hz) {
+    if duration > Duration::from_secs(60) {
+        return Err("motion duration may not exceed 60 seconds in this safety-oriented CLI".into());
+    }
+    if !rate_hz.is_finite() || !(1.0..=100.0).contains(&rate_hz) {
         return Err("--rate-hz must be finite and between 1 and 100".into());
     }
-    if args.forward == 0.0 && args.lateral == 0.0 && args.yaw == 0.0 {
+    if velocity == Velocity::default() {
         return Err(
-            "drive needs movement: use --forward, --lateral, or --yaw (for example: moorebot-scout drive --forward 0.1)"
-                .into(),
+            "motion command cannot be [0, 0, 0] (for example: moorebot-scout move 0.1 0 0)".into(),
         );
     }
 
-    let command = Velocity {
-        forward_mps: args.forward,
-        lateral_mps: args.lateral,
-        yaw_rps: args.yaw,
-    }
-    .to_scout_twist(MotionLimits::default())?;
+    let command = velocity.to_scout_twist(MotionLimits::default())?;
 
     // Own Ctrl-C handling so a zero command can be queued before shutdown.
     // SAFETY: This command initializes ROS before installing the signal handler
@@ -283,12 +327,19 @@ fn drive(config: &Ros1Config, args: DriveArgs) -> Result<(), Box<dyn Error>> {
     }
 
     println!(
-        "Scout command: forward={:.3} m/s lateral={:.3} m/s yaw={:.3} rad/s for {} ms",
-        command.linear_y, command.linear_x, command.angular_z, args.duration_ms
+        "Requested [vx, vy, vtheta] = [{:.3}, {:.3}, {:.3}] (m/s, m/s, rad/s)",
+        velocity.forward_mps, velocity.lateral_mps, velocity.yaw_rps
+    );
+    println!(
+        "Applied   [vx, vy, vtheta] = [{:.3}, {:.3}, {:.3}] for {:.3} seconds",
+        command.linear_y,
+        -command.linear_x,
+        command.angular_z,
+        duration.as_secs_f64()
     );
 
-    let period = Duration::from_secs_f64(1.0 / args.rate_hz);
-    let deadline = Instant::now() + Duration::from_millis(args.duration_ms);
+    let period = Duration::from_secs_f64(1.0 / rate_hz);
+    let deadline = Instant::now() + duration;
     let mut send_error = None;
     while running.load(Ordering::SeqCst) && Instant::now() < deadline {
         if let Err(error) = publisher.send(command) {
@@ -325,16 +376,30 @@ enum TeleopAction {
 }
 
 #[derive(Default)]
+struct KeyHold {
+    pressed: bool,
+    deadline: Option<Instant>,
+}
+
+#[derive(Default)]
 struct TeleopControl {
-    forward_until: Option<Instant>,
-    reverse_until: Option<Instant>,
-    strafe_left_until: Option<Instant>,
-    strafe_right_until: Option<Instant>,
-    turn_left_until: Option<Instant>,
-    turn_right_until: Option<Instant>,
+    forward: KeyHold,
+    reverse: KeyHold,
+    strafe_left: KeyHold,
+    strafe_right: KeyHold,
+    turn_left: KeyHold,
+    turn_right: KeyHold,
+    reliable_key_release: bool,
 }
 
 impl TeleopControl {
+    fn new(reliable_key_release: bool) -> Self {
+        Self {
+            reliable_key_release,
+            ..Self::default()
+        }
+    }
+
     fn handle_key(&mut self, key: KeyEvent, now: Instant) -> TeleopAction {
         if key.modifiers.contains(KeyModifiers::CONTROL)
             && matches!(key.code, KeyCode::Char('c' | 'C'))
@@ -355,24 +420,48 @@ impl TeleopControl {
                     return TeleopAction::Slower;
                 }
                 KeyCode::Char(character) => match character.to_ascii_lowercase() {
-                    'w' => Self::refresh(&mut self.forward_until, key.kind, now),
-                    's' => Self::refresh(&mut self.reverse_until, key.kind, now),
-                    'a' => Self::refresh(&mut self.strafe_left_until, key.kind, now),
-                    'd' => Self::refresh(&mut self.strafe_right_until, key.kind, now),
-                    'q' => Self::refresh(&mut self.turn_left_until, key.kind, now),
-                    'e' => Self::refresh(&mut self.turn_right_until, key.kind, now),
+                    'w' => {
+                        Self::refresh(&mut self.forward, key.kind, now, self.reliable_key_release)
+                    }
+                    's' => {
+                        Self::refresh(&mut self.reverse, key.kind, now, self.reliable_key_release)
+                    }
+                    'a' => Self::refresh(
+                        &mut self.strafe_left,
+                        key.kind,
+                        now,
+                        self.reliable_key_release,
+                    ),
+                    'd' => Self::refresh(
+                        &mut self.strafe_right,
+                        key.kind,
+                        now,
+                        self.reliable_key_release,
+                    ),
+                    'q' => Self::refresh(
+                        &mut self.turn_left,
+                        key.kind,
+                        now,
+                        self.reliable_key_release,
+                    ),
+                    'e' => Self::refresh(
+                        &mut self.turn_right,
+                        key.kind,
+                        now,
+                        self.reliable_key_release,
+                    ),
                     _ => {}
                 },
                 _ => {}
             }
         } else if key.kind == KeyEventKind::Release {
             match key.code {
-                KeyCode::Char('w' | 'W') => self.forward_until = None,
-                KeyCode::Char('s' | 'S') => self.reverse_until = None,
-                KeyCode::Char('a' | 'A') => self.strafe_left_until = None,
-                KeyCode::Char('d' | 'D') => self.strafe_right_until = None,
-                KeyCode::Char('q' | 'Q') => self.turn_left_until = None,
-                KeyCode::Char('e' | 'E') => self.turn_right_until = None,
+                KeyCode::Char('w' | 'W') => self.forward = KeyHold::default(),
+                KeyCode::Char('s' | 'S') => self.reverse = KeyHold::default(),
+                KeyCode::Char('a' | 'A') => self.strafe_left = KeyHold::default(),
+                KeyCode::Char('d' | 'D') => self.strafe_right = KeyHold::default(),
+                KeyCode::Char('q' | 'Q') => self.turn_left = KeyHold::default(),
+                KeyCode::Char('e' | 'E') => self.turn_right = KeyHold::default(),
                 _ => {}
             }
         }
@@ -380,18 +469,30 @@ impl TeleopControl {
         TeleopAction::None
     }
 
-    fn refresh(deadline: &mut Option<Instant>, kind: KeyEventKind, now: Instant) {
+    fn refresh(key: &mut KeyHold, kind: KeyEventKind, now: Instant, reliable_key_release: bool) {
+        key.pressed = true;
+        if reliable_key_release {
+            // Key-up normally ends the command immediately. This longer
+            // deadline is a safety fallback in case focus loss or a terminal
+            // error drops that event; normal repeat events refresh it without
+            // creating a pause in the published velocity.
+            key.deadline = Some(now + TELEOP_KEY_RELEASE_DEADMAN);
+            return;
+        }
+
         // Legacy terminals report every auto-repeat as another Press. Treat a
         // Press received while this key is still active as a repeat, while the
         // first Press gets enough grace for normal desktop repeat delays.
         let is_repeat = kind == KeyEventKind::Repeat
-            || deadline.is_some_and(|current_deadline| current_deadline > now);
+            || key
+                .deadline
+                .is_some_and(|current_deadline| current_deadline > now);
         let timeout = if is_repeat {
             TELEOP_REPEAT_DEADMAN
         } else {
             TELEOP_INITIAL_REPEAT_GRACE
         };
-        *deadline = Some(now + timeout);
+        key.deadline = Some(now + timeout);
     }
 
     fn velocity(
@@ -402,12 +503,12 @@ impl TeleopControl {
         turn_speed: f64,
         speed_scale: f64,
     ) -> Velocity {
-        let forward = Self::active(&mut self.forward_until, now) as i8
-            - Self::active(&mut self.reverse_until, now) as i8;
-        let strafe = Self::active(&mut self.strafe_left_until, now) as i8
-            - Self::active(&mut self.strafe_right_until, now) as i8;
-        let turn = Self::active(&mut self.turn_left_until, now) as i8
-            - Self::active(&mut self.turn_right_until, now) as i8;
+        let forward =
+            Self::active(&mut self.forward, now) as i8 - Self::active(&mut self.reverse, now) as i8;
+        let strafe = Self::active(&mut self.strafe_left, now) as i8
+            - Self::active(&mut self.strafe_right, now) as i8;
+        let turn = Self::active(&mut self.turn_left, now) as i8
+            - Self::active(&mut self.turn_right, now) as i8;
 
         Velocity {
             forward_mps: f64::from(forward) * speed * speed_scale,
@@ -416,17 +517,16 @@ impl TeleopControl {
         }
     }
 
-    fn active(deadline: &mut Option<Instant>, now: Instant) -> bool {
-        if deadline.is_some_and(|deadline| deadline > now) {
-            true
-        } else {
-            *deadline = None;
-            false
+    fn active(key: &mut KeyHold, now: Instant) -> bool {
+        if key.pressed && key.deadline.is_none_or(|deadline| deadline > now) {
+            return true;
         }
+        *key = KeyHold::default();
+        false
     }
 
     fn clear(&mut self) {
-        *self = Self::default();
+        *self = Self::new(self.reliable_key_release);
     }
 }
 
@@ -465,6 +565,7 @@ impl RawTerminal {
                 PushKeyboardEnhancementFlags(
                     KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
                         | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                        | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
                 )
             )
         {
@@ -540,7 +641,12 @@ fn run_teleop_session(
     picture_directory: &Path,
 ) -> Result<(), Box<dyn Error>> {
     let _terminal = RawTerminal::enter()?;
-    let mut control = TeleopControl::default();
+    // Windows exposes key-up events through its console API. Terminals that
+    // support the enhanced keyboard protocol do the same. In both cases,
+    // motion follows key-down/key-up directly and never pauses while waiting
+    // for auto-repeat. A longer stale-input deadline protects against a lost
+    // key-up event.
+    let mut control = TeleopControl::new(cfg!(windows) || _terminal.keyboard_enhancements);
     let mut next_publish = Instant::now();
     let maximum_scale = maximum_speed_scale(args, MotionLimits::default());
     let mut speed_scale = 1.0_f64.min(maximum_scale);
@@ -966,6 +1072,26 @@ mod tests {
     }
 
     #[test]
+    fn move_parses_planar_velocity_vector() {
+        let cli = Cli::try_parse_from([
+            "moorebot-scout",
+            "move",
+            "0.12",
+            "-0.04",
+            "0.6",
+            "--seconds",
+            "0.75",
+        ])
+        .unwrap();
+        let Some(Command::Move(args)) = cli.command else {
+            panic!("move must parse as a move command");
+        };
+        assert_eq!([args.vx, args.vy, args.vtheta], [0.12, -0.04, 0.6]);
+        assert_eq!(args.seconds, 0.75);
+        assert_eq!(args.rate_hz, 10.0);
+    }
+
+    #[test]
     fn teleop_keys_move_release_and_expire() {
         let now = Instant::now();
         let mut control = TeleopControl::default();
@@ -1035,6 +1161,104 @@ mod tests {
         assert_eq!(
             control.velocity(repeated_at + TELEOP_REPEAT_DEADMAN, 0.08, 0.1, 2.0, 1.0,),
             Velocity::default()
+        );
+    }
+
+    #[test]
+    fn teleop_combines_linear_and_angular_velocity() {
+        let now = Instant::now();
+        let mut control = TeleopControl::default();
+
+        for key in ['w', 'a', 'q'] {
+            control.handle_key(
+                KeyEvent::new_with_kind(
+                    KeyCode::Char(key),
+                    KeyModifiers::NONE,
+                    KeyEventKind::Press,
+                ),
+                now,
+            );
+        }
+
+        assert_eq!(
+            control.velocity(now, 0.08, 0.10, 2.0, 1.0).as_vector(),
+            [0.08, 0.10, 2.0]
+        );
+
+        control.handle_key(
+            KeyEvent::new_with_kind(
+                KeyCode::Char('q'),
+                KeyModifiers::NONE,
+                KeyEventKind::Release,
+            ),
+            now,
+        );
+        assert_eq!(
+            control.velocity(now, 0.08, 0.10, 2.0, 1.0).as_vector(),
+            [0.08, 0.10, 0.0]
+        );
+    }
+
+    #[test]
+    fn teleop_with_key_up_support_does_not_depend_on_repeat() {
+        let now = Instant::now();
+        let mut control = TeleopControl::new(true);
+
+        control.handle_key(
+            KeyEvent::new_with_kind(KeyCode::Char('w'), KeyModifiers::NONE, KeyEventKind::Press),
+            now,
+        );
+        assert_eq!(
+            control
+                .velocity(now + Duration::from_secs(2), 0.08, 0.1, 2.0, 1.0)
+                .as_vector(),
+            [0.08, 0.0, 0.0]
+        );
+
+        control.handle_key(
+            KeyEvent::new_with_kind(
+                KeyCode::Char('w'),
+                KeyModifiers::NONE,
+                KeyEventKind::Release,
+            ),
+            now + Duration::from_secs(2),
+        );
+        assert_eq!(
+            control.velocity(now, 0.08, 0.1, 2.0, 1.0),
+            Velocity::default()
+        );
+    }
+
+    #[test]
+    fn teleop_with_key_up_support_stops_if_release_is_lost() {
+        let now = Instant::now();
+        let mut control = TeleopControl::new(true);
+
+        control.handle_key(
+            KeyEvent::new_with_kind(KeyCode::Char('w'), KeyModifiers::NONE, KeyEventKind::Press),
+            now,
+        );
+        assert_eq!(
+            control.velocity(now + TELEOP_KEY_RELEASE_DEADMAN, 0.08, 0.1, 2.0, 1.0),
+            Velocity::default()
+        );
+    }
+
+    #[test]
+    fn clearing_teleop_preserves_key_up_support() {
+        let now = Instant::now();
+        let mut control = TeleopControl::new(true);
+        control.clear();
+
+        control.handle_key(
+            KeyEvent::new_with_kind(KeyCode::Char('w'), KeyModifiers::NONE, KeyEventKind::Press),
+            now,
+        );
+        assert_eq!(
+            control
+                .velocity(now + Duration::from_secs(2), 0.08, 0.1, 2.0, 1.0)
+                .as_vector(),
+            [0.08, 0.0, 0.0]
         );
     }
 
