@@ -39,6 +39,9 @@ const SPEED_SCALE_STEP: f64 = 0.25;
 const MIN_SPEED_SCALE: f64 = 0.25;
 const MAX_SYSTEM_COMMAND_OUTPUT_BYTES: u64 = 64 * 1024;
 const SYSTEM_COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
+const MOTOR_CONNECTION_ATTEMPTS: usize = 2;
+const MOTOR_CONNECTION_WAIT: Duration = Duration::from_secs(6);
+const MOTOR_CONNECTION_RETRY_PAUSE: Duration = Duration::from_millis(250);
 const TELEOP_HELP: &str = "Controls (movement keys can be held together):\n  W / S       forward / backward (vx)\n  A / D       strafe left / right (vy)\n  Q / E       turn left / right (vtheta)\n  Up / Down   increase / decrease speed and control rate\n  Space       save the latest camera frame to the Desktop\n  Esc/Ctrl-C  stop and exit";
 
 #[derive(Parser)]
@@ -193,18 +196,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
     let command = cli
         .command
         .unwrap_or_else(|| Command::Teleop(TeleopArgs::default()));
+    let node_name = command_node_name(&command, std::process::id());
     let config = Ros1Config {
         master_uri: cli.master,
         advertise_address: cli.advertise_address,
-        node_name: match &command {
-            Command::Discover => "moorebot_scout_discover",
-            Command::Drive(_) => "moorebot_scout_drive",
-            Command::Move(_) => "moorebot_scout_move",
-            Command::Teleop(_) => "moorebot_scout_teleop",
-            Command::Monitor(_) => "moorebot_scout_monitor",
-            Command::CameraBridge(_) => "moorebot_scout_camera_bridge",
-        }
-        .into(),
+        node_name,
     };
 
     println!("Looking for a Moorebot Scout...");
@@ -215,6 +211,29 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
         Command::Teleop(args) => teleop(&config, args),
         Command::Monitor(args) => monitor(&config, args),
         Command::CameraBridge(args) => camera_bridge(&config, args),
+    }
+}
+
+fn command_node_name(command: &Command, process_id: u32) -> String {
+    let base = match command {
+        Command::Discover => "moorebot_scout_discover",
+        Command::Drive(_) => "moorebot_scout_drive",
+        Command::Move(_) => "moorebot_scout_move",
+        Command::Teleop(_) => "moorebot_scout_teleop",
+        Command::Monitor(_) => "moorebot_scout_monitor",
+        Command::CameraBridge(_) => "moorebot_scout_camera_bridge",
+    };
+    format!("{base}_{process_id}")
+}
+
+/// Shut ROS down only after publishers and subscribers declared later in the
+/// scope have been dropped and synchronously unregistered from the master.
+struct RosShutdownGuard;
+
+impl Drop for RosShutdownGuard {
+    fn drop(&mut self) {
+        rosrust::shutdown();
+        thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -312,6 +331,7 @@ fn send_velocity(
     // SAFETY: This command initializes ROS before installing the signal handler
     // or starting any other application threads.
     let connection = unsafe { ros1::init(config, false, MAX_SENSOR_MESSAGE_BYTES)? };
+    let _ros_shutdown = RosShutdownGuard;
     announce_connection(connection);
     let running = Arc::new(AtomicBool::new(true));
     let signal_running = Arc::clone(&running);
@@ -321,10 +341,7 @@ fn send_velocity(
         drive_thread.unpark();
     })?;
 
-    let publisher = TwistPublisher::new(topics::CMD_VEL, 2)?;
-    if !publisher.wait_for_a_subscriber(Duration::from_secs(3)) {
-        return Err(motor_connection_error().into());
-    }
+    let publisher = connect_motor_controller(connection)?;
 
     println!(
         "Requested [vx, vy, vtheta] = [{:.3}, {:.3}, {:.3}] (m/s, m/s, rad/s)",
@@ -356,7 +373,6 @@ fn send_velocity(
     // Ctrl-C paths. A short flush interval gives TCPROS time to transmit it.
     let stop_result = publisher.send(ScoutTwist::zero());
     thread::sleep(Duration::from_millis(100));
-    rosrust::shutdown();
 
     if let Some(error) = send_error {
         return Err(error.into());
@@ -730,6 +746,7 @@ fn teleop(config: &Ros1Config, args: TeleopArgs) -> Result<(), Box<dyn Error>> {
     // SAFETY: This command initializes ROS before starting any ROS-owned
     // publishers, subscriptions, signal handlers, or worker threads.
     let connection = unsafe { ros1::init(config, false, ros1::MAX_MEDIA_MESSAGE_BYTES)? };
+    let _ros_shutdown = RosShutdownGuard;
     announce_connection(connection);
     let running = Arc::new(AtomicBool::new(true));
     let signal_running = Arc::clone(&running);
@@ -752,12 +769,7 @@ fn teleop(config: &Ros1Config, args: TeleopArgs) -> Result<(), Box<dyn Error>> {
             }
         },
     )?;
-    let publisher = TwistPublisher::new(topics::CMD_VEL, 2)?;
-    if !publisher.wait_for_a_subscriber(Duration::from_secs(3)) {
-        drop(camera_subscription);
-        rosrust::shutdown();
-        return Err(motor_connection_error().into());
-    }
+    let publisher = connect_motor_controller(connection)?;
 
     if camera_subscription.publisher_count() == 0 {
         println!(
@@ -784,7 +796,6 @@ fn teleop(config: &Ros1Config, args: TeleopArgs) -> Result<(), Box<dyn Error>> {
     let stop_result = publisher.send(ScoutTwist::zero());
     thread::sleep(Duration::from_millis(100));
     drop(camera_subscription);
-    rosrust::shutdown();
 
     session_result?;
     stop_result?;
@@ -932,8 +943,39 @@ fn camera_bridge(config: &Ros1Config, args: CameraBridgeArgs) -> Result<(), Box<
     Ok(())
 }
 
-fn motor_connection_error() -> &'static str {
-    "the Scout motor controller did not connect, so no movement was sent. On Windows, allow moorebot-scout.exe through the firewall on Private networks; on every platform, verify that the Scout is fully started and this computer is still connected to its Wi-Fi"
+fn connect_motor_controller(connection: ConnectionInfo) -> Result<TwistPublisher, Box<dyn Error>> {
+    for attempt in 1..=MOTOR_CONNECTION_ATTEMPTS {
+        let publisher = TwistPublisher::new(topics::CMD_VEL, 2)?;
+        println!(
+            "Waiting for the Scout motor controller (attempt {attempt}/{MOTOR_CONNECTION_ATTEMPTS})..."
+        );
+        if publisher.wait_for_a_subscriber(MOTOR_CONNECTION_WAIT) {
+            return Ok(publisher);
+        }
+
+        // Dropping unregisters this publisher before the retry. This matters
+        // for Scout firmware that is slow to discard a recently closed TCPROS
+        // endpoint.
+        drop(publisher);
+        if attempt < MOTOR_CONNECTION_ATTEMPTS {
+            println!("The first connection attempt timed out; registering again...");
+            thread::sleep(MOTOR_CONNECTION_RETRY_PAUSE);
+        }
+    }
+
+    Err(motor_connection_error(connection).into())
+}
+
+fn motor_connection_error(connection: ConnectionInfo) -> String {
+    match ros1::registered_subscribers(topics::CMD_VEL) {
+        Ok(nodes) if !nodes.is_empty() => format!(
+            "the ROS master reports a /cmd_vel motor subscriber ({}) but it could not connect back to this computer at {}. No movement was sent. On Windows, set only the dedicated Scout Wi-Fi network to Private and allow the current moorebot-scout.exe path through the firewall on Private networks. On managed, guest, or router Wi-Fi, verify that client isolation and inbound firewall rules permit connections from the Scout",
+            nodes.join(", "),
+            connection.advertise_address
+        ),
+        _ => "the Scout ROS master has no /cmd_vel motor subscriber, so no movement was sent. Wait for the Scout to finish starting, run discover again, and power-cycle the Scout if /MotorNode does not return"
+            .into(),
+    }
 }
 
 fn announce_connection(connection: ConnectionInfo) {
@@ -1089,6 +1131,30 @@ mod tests {
         assert_eq!([args.vx, args.vy, args.vtheta], [0.12, -0.04, 0.6]);
         assert_eq!(args.seconds, 0.75);
         assert_eq!(args.rate_hz, 10.0);
+    }
+
+    #[test]
+    fn ros_node_names_are_unique_per_process_and_command() {
+        let move_command = Command::Move(MoveArgs {
+            vx: 0.1,
+            vy: 0.0,
+            vtheta: 0.0,
+            seconds: 0.5,
+            rate_hz: 10.0,
+        });
+
+        assert_eq!(
+            command_node_name(&move_command, 1234),
+            "moorebot_scout_move_1234"
+        );
+        assert_eq!(
+            command_node_name(&Command::Discover, 5678),
+            "moorebot_scout_discover_5678"
+        );
+        assert_ne!(
+            command_node_name(&move_command, 1234),
+            command_node_name(&move_command, 5678)
+        );
     }
 
     #[test]

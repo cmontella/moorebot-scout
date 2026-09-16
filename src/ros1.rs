@@ -261,6 +261,21 @@ pub fn registered_services() -> Result<Vec<RegisteredService>, Ros1Error> {
         .collect())
 }
 
+/// Return the ROS nodes currently registered as subscribers to `topic`.
+///
+/// This does not prove that their TCPROS connections reached this process,
+/// but it lets callers distinguish a missing robot node from a blocked return
+/// connection.
+pub fn registered_subscribers(topic: &str) -> Result<Vec<String>, Ros1Error> {
+    let state = rosrust::state().map_err(|error| Ros1Error(error.to_string()))?;
+    Ok(state
+        .subscribers
+        .into_iter()
+        .find(|entry| entry.name == topic)
+        .map(|entry| entry.connections)
+        .unwrap_or_default())
+}
+
 #[derive(Clone)]
 pub struct TwistPublisher {
     inner: Publisher<RawMessage>,

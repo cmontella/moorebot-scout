@@ -170,9 +170,11 @@ swaps the two linear axes:
 Commands are clamped to 0.47 m/s forward, 0.2 m/s lateral, and 2.9 rad/s yaw.
 The first-party motor source defines approximately 0.47 m/s as its linear
 ceiling; the lower lateral and yaw values follow the supplied controller. A
-command is refused if no `/cmd_vel` subscriber connects within three seconds.
-This initial CLI also limits a single command to 60 seconds and its update rate
-to 1–100 Hz.
+For each invocation, the driver uses a unique ROS node name, waits up to six
+seconds for the motor controller, and automatically re-registers once if the
+first connection attempt times out. A command is refused if neither attempt
+establishes the return connection. This initial CLI also limits a single
+command to 60 seconds and its update rate to 1–100 Hz.
 
 ### Drive with the keyboard and capture pictures
 
