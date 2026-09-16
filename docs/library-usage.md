@@ -3,34 +3,31 @@
 The command-line program is the easiest starting point. This page is for a
 student who wants to use the protocol types in another Rust project.
 
-The crate is not on crates.io yet. Until the first release, add the Git
-repository to your project's `Cargo.toml`. Disable default features when you
-only need protocol parsing and do not need live ROS transport:
+The crate is not on crates.io yet. Add the Git repository to your project's
+`Cargo.toml`. Disable default features when you only need protocol parsing and
+do not need live ROS transport:
 
 ```toml
 [dependencies]
 moorebot-scout = { git = "https://github.com/cmontella/moorebot-scout", default-features = false }
 ```
 
-After issue #7 is complete and a release exists, this will be replaced by a
-normal crates.io version requirement.
+Once crates.io publishing is enabled, this can be replaced by a normal version
+requirement.
 
 ## Example: map a safe motion request
 
-The public `Velocity` type uses the meanings students normally expect:
-positive forward velocity goes forward, positive lateral velocity goes left,
-and positive yaw turns counter-clockwise. The conversion applies limits and
-maps those values to the Scout's unusual axes.
+The public `Velocity` type accepts `[vx, vy, vtheta]`, which is the planar
+`(v, omega)` pair with `v = [vx, vy]`. Positive `vx` goes forward, positive
+`vy` goes left, and positive `vtheta` turns counter-clockwise. Linear values
+use meters per second and angular values use radians per second. The conversion
+applies limits and maps those values to the Scout's unusual axes.
 
 ```rust
 use moorebot_scout::motion::{MotionLimits, Velocity};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let requested = Velocity {
-        forward_mps: 0.10,
-        lateral_mps: 0.0,
-        yaw_rps: 0.0,
-    };
+    let requested = Velocity::from([0.10, 0.0, 0.6]);
 
     let scout = requested.to_scout_twist(MotionLimits::default())?;
     println!("Scout linear.x: {}", scout.linear_x);
@@ -49,6 +46,11 @@ cargo run --example motion_mapping --no-default-features
 Converting a velocity does not contact a robot. Publishing motion is a separate
 operation and should preserve the CLI's connection checks, deadline, Ctrl-C
 handling, and final zero-velocity command.
+
+With the `ros1` feature, `TwistPublisher::send_velocity` accepts either the
+three-component array or a `([vx, vy], omega)` pair and performs the same limit
+and Scout-axis conversion before publishing. Applications remain responsible
+for sending a zero command and handling connection loss safely.
 
 ## Example: inspect known interfaces
 

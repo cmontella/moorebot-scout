@@ -396,10 +396,10 @@ Then request only 0.05 m/s forward for 250 milliseconds:
 
 ```text
 # Wi-Fi Direct
-./moorebot-scout drive --forward 0.05 --duration-ms 250
+./moorebot-scout move 0.05 0 0 --seconds 0.25
 
 # Wi-Fi Router mode
-./moorebot-scout --master http://192.168.1.73:11311 drive --forward 0.05 --duration-ms 250
+./moorebot-scout --master http://192.168.1.73:11311 move 0.05 0 0 --seconds 0.25
 ```
 
 The driver refuses to move if no `/cmd_vel` subscriber connects within three
@@ -410,20 +410,27 @@ software safeguards, not a replacement for the physical precautions above.
 Once the first command is understood, these are separate low-speed examples:
 
 ```text
-# Wi-Fi Direct: ask for backward motion
-./moorebot-scout drive --forward -0.05 --duration-ms 250
+# Wi-Fi Direct: ask for backward motion: [vx, vy, vtheta]
+./moorebot-scout move -0.05 0 0 --seconds 0.25
 
 # Wi-Fi Direct: ask for leftward motion
-./moorebot-scout drive --lateral 0.05 --duration-ms 250
+./moorebot-scout move 0 0.05 0 --seconds 0.25
 
 # Wi-Fi Direct: ask for a counter-clockwise turn
-./moorebot-scout drive --yaw 2.0 --duration-ms 250
+./moorebot-scout move 0 0 2.0 --seconds 0.25
 
-# Wi-Fi Router mode: use the same --master prefix with any drive options
-./moorebot-scout --master http://192.168.1.73:11311 drive --yaw 2.0 --duration-ms 250
+# Wi-Fi Router mode: use the same --master prefix with any move command
+./moorebot-scout --master http://192.168.1.73:11311 move 0 0 2.0 --seconds 0.25
 ```
 
-Those direction names are the driver's intended standard coordinate semantics.
+The vector is always `[vx, vy, vtheta]`: `vx` is forward, `vy` is left, and
+`vtheta` turns counter-clockwise. Linear values use meters per second and
+angular values use radians per second. Values may be combined, such as
+`move 0.05 0.03 0.5 --seconds 2`, to translate while turning for two seconds.
+The older named form,
+`drive --forward 0.05 --lateral 0.03 --yaw 0.5`, is also supported.
+
+Those directions are the driver's intended standard coordinate semantics.
 Confirm the real wheel directions while the robot is still on the stand and
 report any firmware-specific discrepancy with the Scout firmware version.
 
@@ -458,14 +465,17 @@ is:
 | Space | Stop, then save the latest camera image as a new JPEG |
 | Escape or Ctrl-C | Stop and exit |
 
-Hold or repeatedly tap a movement key. The program allows up to 1.1 seconds
-after the first press for the computer's normal key-repeat delay. Once repeats
-begin, it stops a direction within 350 milliseconds if those events cease.
-Terminals that report key-release events stop that direction immediately on
-release. This means a quick tap on a legacy terminal can continue for up to 1.1
-seconds, so the default speed remains deliberately low. These timers and the
-final stop command reduce risk, but neither can protect against a crashed robot
-process, a broken network, or loss of power to the computer.
+Hold movement keys together to combine linear and angular velocity: W+Q moves
+forward while turning left, and W+A+Q sets all three `[vx, vy, vtheta]`
+components. On Windows and terminals with key-up support, motion starts on
+key-down, continues smoothly without waiting for keyboard repeat, and stops on
+key-up. Older terminals that cannot report key-up use key-repeat events plus a
+deadman timer; they allow up to 1.1 seconds for the first repeat and stop a
+direction within 350 milliseconds when repeats cease. A quick tap in one of
+those older terminals can therefore continue for up to 1.1 seconds, so the
+default speed remains deliberately low. These controls and the final stop
+command reduce risk, but neither can protect against a crashed robot process,
+a broken network, or loss of power to the computer.
 
 Pictures are saved on the Desktop with names such as
 `scout-1788990123456-frame-42.jpg`. Pressing Space before a valid JPEG arrives

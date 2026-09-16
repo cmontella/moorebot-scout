@@ -42,8 +42,8 @@ If you want to use the crate from another Rust program, see the
 - Enumerate the live ROS topics and services, with annotations for known Scout
   interfaces.
 - Publish bounded motion commands to `/cmd_vel`, including the Scout's unusual
-  linear-axis mapping and a zero-velocity command on normal, error, or Ctrl-C
-  exit.
+  linear-axis mapping, an explicit `[vx, vy, vtheta]` interface, and a
+  zero-velocity command on normal, error, or Ctrl-C exit.
 - Drive interactively with WASD and save the latest valid camera JPEG with
   Space. Key-release handling and input deadman timers stop stale movement.
 - Decode the Scout's 6-axis IMU, time-of-flight range sensor, ambient-light
@@ -145,24 +145,27 @@ standard, it is also a cleaner boundary for a later ROS 1-to-ROS 2 bridge.
 
 ### Send a short motion command
 
-This example asks for 0.1 m/s forward motion for 500 ms, then sends a stop:
+This example sends `[vx, vy, vtheta] = [0.1, 0, 0]` for 500 ms, then sends a
+stop. The units are meters per second, meters per second, and radians per
+second:
 
 ```sh
-moorebot-scout drive --forward 0.1 --duration-ms 500
+moorebot-scout move 0.1 0 0 --seconds 0.5
 ```
 
-`drive` is a one-shot timed command and requires at least one of `--forward`,
-`--lateral`, or `--yaw`. Components can be combined for diagonal motion while
-turning.
+The three values can be nonzero at the same time. For example,
+`moorebot-scout move 0.1 0.05 0.6 --seconds 2` moves forward and left while
+turning for two seconds. The older
+`drive --forward 0.1 --lateral 0.05 --yaw 0.6` spelling remains available.
 
 The public API uses standard mobile-base semantics, while the Scout firmware
 swaps the two linear axes:
 
-| Meaning | Driver input | Scout `/cmd_vel` |
-|---|---:|---:|
-| Forward/backward | `forward_mps` | `linear.y` |
-| Left/right strafe | `lateral_mps` | negated `linear.x` (Scout X points right) |
-| Counter-clockwise rotation | `yaw_rps` | `angular.z` |
+| Meaning | Vector component | Rust field | Scout `/cmd_vel` |
+|---|---:|---:|---:|
+| Forward/backward | `vx` | `forward_mps` | `linear.y` |
+| Left/right strafe | `vy` | `lateral_mps` | negated `linear.x` (Scout X points right) |
+| Counter-clockwise rotation | `vtheta` | `yaw_rps` | `angular.z` |
 
 Commands are clamped to 0.47 m/s forward, 0.2 m/s lateral, and 2.9 rad/s yaw.
 The first-party motor source defines approximately 0.47 m/s as its linear
@@ -190,6 +193,9 @@ the advanced options below.
 | Up / Down | increase / decrease speed and control rate |
 | Space | save the latest JPEG to the Desktop |
 | Esc or Ctrl-C | stop and exit |
+
+Hold movement keys together to combine axes—for example, W+Q drives forward
+while turning, and W+A+Q sets all three `[vx, vy, vtheta]` components.
 
 The Scout motor controller mixes forward, lateral, and yaw commands across all
 four Mecanum wheels. Teleop starts at 40 Hz. Up/Down changes both velocity and

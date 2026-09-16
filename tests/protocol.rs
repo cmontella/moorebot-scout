@@ -146,6 +146,19 @@ fn maps_standard_axes_to_scout_axes_and_clamps() {
 }
 
 #[test]
+fn planar_velocity_round_trips_as_vx_vy_vtheta() {
+    let velocity = Velocity::from([0.12, -0.04, 0.6]);
+
+    assert_eq!(velocity.forward_mps, 0.12);
+    assert_eq!(velocity.lateral_mps, -0.04);
+    assert_eq!(velocity.yaw_rps, 0.6);
+    assert_eq!(velocity.as_vector(), [0.12, -0.04, 0.6]);
+    assert_eq!(velocity.as_v_omega(), ([0.12, -0.04], 0.6));
+    assert_eq!(<[f64; 3]>::from(velocity), [0.12, -0.04, 0.6]);
+    assert_eq!(Velocity::from(([0.12, -0.04], 0.6)), velocity);
+}
+
+#[test]
 fn rejects_non_finite_motion() {
     let error = Velocity {
         forward_mps: f64::NAN,
