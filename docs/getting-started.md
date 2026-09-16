@@ -402,10 +402,12 @@ Then request only 0.05 m/s forward for 250 milliseconds:
 ./moorebot-scout --master http://192.168.1.73:11311 move 0.05 0 0 --seconds 0.25
 ```
 
-The driver refuses to move if no `/cmd_vel` subscriber connects within three
-seconds. It caps requested speeds, limits a command to 60 seconds, and sends a
-zero-velocity command after normal completion, an error, or Ctrl-C. These are
-software safeguards, not a replacement for the physical precautions above.
+The driver waits up to six seconds for the `/cmd_vel` subscriber and
+automatically re-registers once if the first attempt times out. It refuses to
+move if neither attempt establishes the return connection. It caps requested
+speeds, limits a command to 60 seconds, and sends a zero-velocity command after
+normal completion, an error, or Ctrl-C. These are software safeguards, not a
+replacement for the physical precautions above.
 
 Once the first command is understood, these are separate low-speed examples:
 
@@ -573,15 +575,29 @@ download the newest release instead of editing the system hosts file. For an
 unusual routed setup, `--advertise-address 10.42.0.x` manually overrides route
 selection; it must be the computer's address, not the robot or `127.0.0.1`.
 
-### `no subscriber connected to /cmd_vel`
+### The Scout motor controller does not connect
 
-The driver deliberately refused to send motion because it could not confirm a
-motor-node subscriber. Run `discover` and verify the robot is fully booted. On
-Windows, open **Windows Security → Firewall & network protection → Allow an app
-through firewall**, allow `moorebot-scout.exe` on **Private** networks, and keep
-Public networks unchecked. If Windows shows a firewall prompt when the program
-starts, make the same Private-only choice. Reconnect to the Scout Wi-Fi and try
-again. Do not disable the firewall or bypass the driver's guard.
+The driver deliberately refuses to send motion unless the motor node completes
+a return connection to the computer. Version 0.1.4 and newer wait six seconds,
+unregister a failed publisher, and try once more. They also report whether the
+ROS master is missing the motor subscriber or whether the subscriber is
+registered but cannot reach the computer.
+
+If the subscriber is missing, wait for the Scout to finish booting, run
+`discover`, and power-cycle it if `/MotorNode` does not return. If the message
+says that the subscriber cannot connect back, check the computer firewall and
+network isolation. Windows often classifies a new no-internet robot network as
+Public. Only for the dedicated, trusted Scout Wi-Fi, open **Settings → Network &
+internet → Wi-Fi → the robot network** and change **Network profile type** to
+**Private**. Then open **Windows Security → Firewall & network protection →
+Allow an app through firewall** and allow the executable at its current path on
+Private networks. Keep Public networks unchecked, do not disable the firewall,
+and do not move the executable after approving it.
+
+Each invocation now has a unique ROS node name and unregisters its publisher
+before shutting down, so a completed command should not prevent the next
+command from connecting. If that still occurs, rerun the failed command with
+`--verbose` and save the complete output for the instructor.
 
 ### Sensor monitoring keeps waiting
 

@@ -1,7 +1,7 @@
 [package]
 name = "moorebot-scout"
 authors = ["Corey Montella <corey@mech-lang.org>"]
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 rust-version = "1.98"
 description = "A driver and protocol library for the Moorebot Scout"
