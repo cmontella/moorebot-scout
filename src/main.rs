@@ -34,6 +34,7 @@ use std::{
 
 const TELEOP_INITIAL_REPEAT_GRACE: Duration = Duration::from_millis(1_100);
 const TELEOP_REPEAT_DEADMAN: Duration = Duration::from_millis(350);
+const TELEOP_KEY_RELEASE_DEADMAN: Duration = Duration::from_secs(3);
 const SPEED_SCALE_STEP: f64 = 0.25;
 const MIN_SPEED_SCALE: f64 = 0.25;
 const MAX_SYSTEM_COMMAND_OUTPUT_BYTES: u64 = 64 * 1024;
@@ -326,10 +327,14 @@ fn send_velocity(
     }
 
     println!(
-        "Scout command [vx, vy, vtheta] = [{:.3}, {:.3}, {:.3}] (m/s, m/s, rad/s) for {:.3} seconds",
-        velocity.forward_mps,
-        velocity.lateral_mps,
-        velocity.yaw_rps,
+        "Requested [vx, vy, vtheta] = [{:.3}, {:.3}, {:.3}] (m/s, m/s, rad/s)",
+        velocity.forward_mps, velocity.lateral_mps, velocity.yaw_rps
+    );
+    println!(
+        "Applied   [vx, vy, vtheta] = [{:.3}, {:.3}, {:.3}] for {:.3} seconds",
+        command.linear_y,
+        -command.linear_x,
+        command.angular_z,
         duration.as_secs_f64()
     );
 
@@ -467,7 +472,11 @@ impl TeleopControl {
     fn refresh(key: &mut KeyHold, kind: KeyEventKind, now: Instant, reliable_key_release: bool) {
         key.pressed = true;
         if reliable_key_release {
-            key.deadline = None;
+            // Key-up normally ends the command immediately. This longer
+            // deadline is a safety fallback in case focus loss or a terminal
+            // error drops that event; normal repeat events refresh it without
+            // creating a pause in the published velocity.
+            key.deadline = Some(now + TELEOP_KEY_RELEASE_DEADMAN);
             return;
         }
 
@@ -517,7 +526,7 @@ impl TeleopControl {
     }
 
     fn clear(&mut self) {
-        *self = Self::default();
+        *self = Self::new(self.reliable_key_release);
     }
 }
 
@@ -556,6 +565,7 @@ impl RawTerminal {
                 PushKeyboardEnhancementFlags(
                     KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
                         | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                        | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
                 )
             )
         {
@@ -633,7 +643,9 @@ fn run_teleop_session(
     let _terminal = RawTerminal::enter()?;
     // Windows exposes key-up events through its console API. Terminals that
     // support the enhanced keyboard protocol do the same. In both cases,
-    // motion follows key-down/key-up directly and never waits for auto-repeat.
+    // motion follows key-down/key-up directly and never pauses while waiting
+    // for auto-repeat. A longer stale-input deadline protects against a lost
+    // key-up event.
     let mut control = TeleopControl::new(cfg!(windows) || _terminal.keyboard_enhancements);
     let mut next_publish = Instant::now();
     let maximum_scale = maximum_speed_scale(args, MotionLimits::default());
@@ -1198,7 +1210,7 @@ mod tests {
         );
         assert_eq!(
             control
-                .velocity(now + Duration::from_secs(10), 0.08, 0.1, 2.0, 1.0)
+                .velocity(now + Duration::from_secs(2), 0.08, 0.1, 2.0, 1.0)
                 .as_vector(),
             [0.08, 0.0, 0.0]
         );
@@ -1209,11 +1221,44 @@ mod tests {
                 KeyModifiers::NONE,
                 KeyEventKind::Release,
             ),
-            now + Duration::from_secs(10),
+            now + Duration::from_secs(2),
         );
         assert_eq!(
             control.velocity(now, 0.08, 0.1, 2.0, 1.0),
             Velocity::default()
+        );
+    }
+
+    #[test]
+    fn teleop_with_key_up_support_stops_if_release_is_lost() {
+        let now = Instant::now();
+        let mut control = TeleopControl::new(true);
+
+        control.handle_key(
+            KeyEvent::new_with_kind(KeyCode::Char('w'), KeyModifiers::NONE, KeyEventKind::Press),
+            now,
+        );
+        assert_eq!(
+            control.velocity(now + TELEOP_KEY_RELEASE_DEADMAN, 0.08, 0.1, 2.0, 1.0),
+            Velocity::default()
+        );
+    }
+
+    #[test]
+    fn clearing_teleop_preserves_key_up_support() {
+        let now = Instant::now();
+        let mut control = TeleopControl::new(true);
+        control.clear();
+
+        control.handle_key(
+            KeyEvent::new_with_kind(KeyCode::Char('w'), KeyModifiers::NONE, KeyEventKind::Press),
+            now,
+        );
+        assert_eq!(
+            control
+                .velocity(now + Duration::from_secs(2), 0.08, 0.1, 2.0, 1.0)
+                .as_vector(),
+            [0.08, 0.0, 0.0]
         );
     }
 

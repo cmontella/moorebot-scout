@@ -194,8 +194,11 @@ the advanced options below.
 | Space | save the latest JPEG to the Desktop |
 | Esc or Ctrl-C | stop and exit |
 
-Hold movement keys together to combine axes—for example, W+Q drives forward
-while turning, and W+A+Q sets all three `[vx, vy, vtheta]` components.
+On Windows and terminals with key-up support, hold movement keys together to
+combine axes—for example, W+Q drives forward while turning, and W+A+Q sets all
+three `[vx, vy, vtheta]` components. Older terminals may repeat only the most
+recent key; use the timed `move` command when they cannot maintain a
+multi-axis hold.
 
 The Scout motor controller mixes forward, lateral, and yaw commands across all
 four Mecanum wheels. Teleop starts at 40 Hz. Up/Down changes both velocity and

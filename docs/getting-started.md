@@ -465,17 +465,22 @@ is:
 | Space | Stop, then save the latest camera image as a new JPEG |
 | Escape or Ctrl-C | Stop and exit |
 
-Hold movement keys together to combine linear and angular velocity: W+Q moves
-forward while turning left, and W+A+Q sets all three `[vx, vy, vtheta]`
-components. On Windows and terminals with key-up support, motion starts on
-key-down, continues smoothly without waiting for keyboard repeat, and stops on
-key-up. Older terminals that cannot report key-up use key-repeat events plus a
-deadman timer; they allow up to 1.1 seconds for the first repeat and stop a
-direction within 350 milliseconds when repeats cease. A quick tap in one of
-those older terminals can therefore continue for up to 1.1 seconds, so the
-default speed remains deliberately low. These controls and the final stop
-command reduce risk, but neither can protect against a crashed robot process,
-a broken network, or loss of power to the computer.
+On Windows and terminals with key-up support, hold movement keys together to
+combine linear and angular velocity: W+Q moves forward while turning left, and
+W+A+Q sets all three `[vx, vy, vtheta]` components. Motion starts on key-down,
+continues smoothly without pausing for keyboard repeat, and stops on key-up. A
+three-second stale-input fallback stops motion if focus loss or a terminal
+error drops the key-up event.
+
+Older terminals that cannot report key-up use key-repeat events plus a deadman
+timer. Some repeat only the most recently pressed key, so multi-axis holds are
+not reliable there; use the timed `move` command for a reproducible combined
+vector. These terminals allow up to 1.1 seconds for the first repeat and stop a
+direction within 350 milliseconds when repeats cease. A quick tap can
+therefore continue for up to 1.1 seconds, so the default speed remains
+deliberately low. These controls and the final stop command reduce risk, but
+neither can protect against a crashed robot process, a broken network, or loss
+of power to the computer.
 
 Pictures are saved on the Desktop with names such as
 `scout-1788990123456-frame-42.jpg`. Pressing Space before a valid JPEG arrives
