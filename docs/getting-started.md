@@ -108,10 +108,11 @@ newest package for your computer:
 | Apple Silicon Mac (M1, M2, M3, and newer) | `moorebot-scout-aarch64-apple-darwin.tar.gz` |
 | Intel Mac | `moorebot-scout-x86_64-apple-darwin.tar.gz` |
 | 64-bit Windows | `moorebot-scout-x86_64-pc-windows-msvc.zip` |
+| 64-bit Linux | `moorebot-scout-x86_64-unknown-linux-gnu.tar.gz` |
 
-Extract the downloaded package. It contains just `moorebot-scout` on a Mac or
-`moorebot-scout.exe` on Windows. You do not need to install Rust, ROS, Git,
-Python, or MATLAB. Windows users can also download the standalone
+Extract the downloaded package. It contains just `moorebot-scout` on macOS or
+Linux, or `moorebot-scout.exe` on Windows. You do not need to install Rust,
+ROS, Git, Python, or MATLAB. Windows users can also download the standalone
 `moorebot-scout.exe` release asset directly instead of the ZIP.
 
 These early releases are not yet code-signed. Windows SmartScreen or macOS
@@ -122,11 +123,11 @@ it; do not globally disable Gatekeeper. On Windows, inspect the publisher
 warning before choosing **More info → Run anyway**. The release also provides
 `SHA256SUMS` if an instructor wants to verify the download.
 
-Open Terminal on macOS or PowerShell on Windows, change into the extracted
-folder, and check the program:
+Open Terminal on macOS or Linux, or PowerShell on Windows, change into the
+extracted folder, and check the program:
 
 ```text
-# macOS
+# macOS or Linux
 chmod +x ./moorebot-scout
 ./moorebot-scout --help
 
@@ -134,7 +135,7 @@ chmod +x ./moorebot-scout
 ./moorebot-scout.exe --help
 ```
 
-The examples below show the macOS spelling. On Windows, replace
+The examples below show the macOS/Linux spelling. On Windows, replace
 `./moorebot-scout` with `./moorebot-scout.exe`.
 
 ### Optional: build the same program from source
