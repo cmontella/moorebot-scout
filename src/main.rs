@@ -1,3 +1,5 @@
+mod integration_bridge;
+
 use clap::{Args, Parser, Subcommand};
 use crossterm::{
     event::{
@@ -22,6 +24,7 @@ use std::{
     error::Error,
     fs::{self, OpenOptions},
     io::{self, Read, Write},
+    net::SocketAddr,
     path::{Path, PathBuf},
     process::{Command as ProcessCommand, Stdio},
     sync::{
@@ -31,6 +34,8 @@ use std::{
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+
+use integration_bridge::{BridgeOptions, IntegrationBridge};
 
 const TELEOP_INITIAL_REPEAT_GRACE: Duration = Duration::from_millis(1_100);
 const TELEOP_REPEAT_DEADMAN: Duration = Duration::from_millis(350);
@@ -77,6 +82,8 @@ enum Command {
     Monitor(MonitorArgs),
     /// Convert `/CoreNode/jpg` into standard `sensor_msgs/CompressedImage`.
     CameraBridge(CameraBridgeArgs),
+    /// Run a local Python/MATLAB command and camera bridge.
+    Bridge(BridgeArgs),
 }
 
 #[derive(Args)]
@@ -168,6 +175,25 @@ struct CameraBridgeArgs {
     output_topic: String,
 }
 
+#[derive(Args)]
+struct BridgeArgs {
+    /// Local JSON command endpoint. Loopback addresses only.
+    #[arg(long, default_value = "127.0.0.1:43000")]
+    control_address: SocketAddr,
+    /// Local length-prefixed JPEG endpoint. Loopback addresses only.
+    #[arg(long, default_value = "127.0.0.1:43001")]
+    camera_address: SocketAddr,
+    /// ROS velocity publication frequency.
+    #[arg(long, default_value_t = 40.0)]
+    rate_hz: f64,
+    /// Longest command lifetime accepted from a client.
+    #[arg(long, default_value_t = 1000)]
+    max_command_timeout_ms: u64,
+    /// Scout JPEG camera topic.
+    #[arg(long, default_value = topics::JPEG)]
+    camera_topic: String,
+}
+
 #[derive(Default)]
 struct SensorSnapshot {
     imu: Option<ImuSample>,
@@ -211,6 +237,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
         Command::Teleop(args) => teleop(&config, args),
         Command::Monitor(args) => monitor(&config, args),
         Command::CameraBridge(args) => camera_bridge(&config, args),
+        Command::Bridge(args) => integration_bridge(&config, args),
     }
 }
 
@@ -222,6 +249,7 @@ fn command_node_name(command: &Command, process_id: u32) -> String {
         Command::Teleop(_) => "moorebot_scout_teleop",
         Command::Monitor(_) => "moorebot_scout_monitor",
         Command::CameraBridge(_) => "moorebot_scout_camera_bridge",
+        Command::Bridge(_) => "moorebot_scout_integration_bridge",
     };
     format!("{base}_{process_id}")
 }
@@ -943,6 +971,90 @@ fn camera_bridge(config: &Ros1Config, args: CameraBridgeArgs) -> Result<(), Box<
     Ok(())
 }
 
+fn integration_bridge(config: &Ros1Config, args: BridgeArgs) -> Result<(), Box<dyn Error>> {
+    if !args.rate_hz.is_finite() || !(1.0..=100.0).contains(&args.rate_hz) {
+        return Err("--rate-hz must be finite and between 1 and 100".into());
+    }
+    if !(100..=2_000).contains(&args.max_command_timeout_ms) {
+        return Err("--max-command-timeout-ms must be between 100 and 2000".into());
+    }
+
+    // SAFETY: ROS is initialized before the bridge creates application worker
+    // threads or the Ctrl-C handler.
+    let connection = unsafe { ros1::init(config, false, ros1::MAX_MEDIA_MESSAGE_BYTES)? };
+    let _ros_shutdown = RosShutdownGuard;
+    announce_connection(connection);
+    let running = Arc::new(AtomicBool::new(true));
+    let signal_running = Arc::clone(&running);
+    let bridge_thread = thread::current();
+    ctrlc::set_handler(move || {
+        signal_running.store(false, Ordering::SeqCst);
+        bridge_thread.unpark();
+    })?;
+
+    let publisher = connect_motor_controller(connection)?;
+    let bridge = IntegrationBridge::start(
+        BridgeOptions {
+            control_address: args.control_address,
+            camera_address: args.camera_address,
+            maximum_command_timeout: Duration::from_millis(args.max_command_timeout_ms),
+        },
+        Arc::clone(&running),
+    )?;
+    let frame_sink = bridge.frame_sink();
+    let camera_subscription = ros1::subscribe_raw::<{ ros1::MAX_MEDIA_MESSAGE_BYTES }, _>(
+        &args.camera_topic,
+        1,
+        move |bytes| {
+            let Ok(frame) = ScoutFrame::decode_ros(&bytes) else {
+                return;
+            };
+            if frame.stream_type == StreamType::Jpeg && frame.has_jpeg_markers() {
+                frame_sink.publish(frame.data);
+            }
+        },
+    )?;
+
+    println!(
+        "Integration bridge ready. Commands: {} | camera: {}",
+        bridge.control_address(),
+        bridge.camera_address()
+    );
+    println!(
+        "Keep this window open while Python or MATLAB is controlling the Scout. Ctrl-C stops the robot and exits."
+    );
+    if camera_subscription.publisher_count() == 0 {
+        println!(
+            "Camera: still waiting for {}. Motion commands are available now.",
+            args.camera_topic
+        );
+    }
+
+    let period = Duration::from_secs_f64(1.0 / args.rate_hz);
+    let mut send_error = None;
+    publisher.send(ScoutTwist::zero())?;
+    while running.load(Ordering::SeqCst) && rosrust::is_ok() {
+        if let Err(error) = publisher.send(bridge.current_command(Instant::now())) {
+            send_error = Some(error);
+            break;
+        }
+        thread::park_timeout(period);
+    }
+
+    running.store(false, Ordering::SeqCst);
+    let stop_result = publisher.send(ScoutTwist::zero());
+    thread::sleep(Duration::from_millis(100));
+    drop(camera_subscription);
+    bridge.shutdown();
+
+    if let Some(error) = send_error {
+        return Err(error.into());
+    }
+    stop_result?;
+    println!("Stop command sent.");
+    Ok(())
+}
+
 fn connect_motor_controller(connection: ConnectionInfo) -> Result<TwistPublisher, Box<dyn Error>> {
     for attempt in 1..=MOTOR_CONNECTION_ATTEMPTS {
         let publisher = TwistPublisher::new(topics::CMD_VEL, 2)?;
@@ -1131,6 +1243,27 @@ mod tests {
         assert_eq!([args.vx, args.vy, args.vtheta], [0.12, -0.04, 0.6]);
         assert_eq!(args.seconds, 0.75);
         assert_eq!(args.rate_hz, 10.0);
+    }
+
+    #[test]
+    fn bridge_parses_local_endpoints_and_deadman_limit() {
+        let cli = Cli::try_parse_from([
+            "moorebot-scout",
+            "bridge",
+            "--control-address",
+            "127.0.0.1:44000",
+            "--camera-address",
+            "127.0.0.1:44001",
+            "--max-command-timeout-ms",
+            "750",
+        ])
+        .unwrap();
+        let Some(Command::Bridge(args)) = cli.command else {
+            panic!("bridge must parse as a bridge command");
+        };
+        assert_eq!(args.control_address, "127.0.0.1:44000".parse().unwrap());
+        assert_eq!(args.camera_address, "127.0.0.1:44001".parse().unwrap());
+        assert_eq!(args.max_command_timeout_ms, 750);
     }
 
     #[test]

@@ -20,8 +20,9 @@ safely.
 
 For normal use, download the package for your computer from [GitHub
 Releases](https://github.com/cmontella/moorebot-scout/releases). Each package
-contains one executable—no Rust, ROS, Python, or MATLAB installation is needed.
-After extracting it, connect to the Scout network and run the executable:
+contains the executable plus optional Python and MATLAB clients. Normal
+keyboard use still needs no Rust, ROS, Python, or MATLAB installation. After
+extracting it, connect to the Scout network and run the executable:
 
 ```text
 ./moorebot-scout
@@ -37,6 +38,11 @@ running one.
 If you want to use the crate from another Rust program, see the
 [library examples](docs/library-usage.md).
 
+To process live camera frames and send continuous commands from Python or
+MATLAB, start `moorebot-scout bridge` and follow the
+[integration guide](integrations/README.md). Both language clients use the same
+standard `[vx, vy, vtheta]` interface and do not require a local ROS install.
+
 ## What works today
 
 - Enumerate the live ROS topics and services, with annotations for known Scout
@@ -51,6 +57,8 @@ If you want to use the crate from another Rust program, see the
 - Decode the custom `roller_eye/frame` media message correctly.
 - Republish `/CoreNode/jpg` as standard `sensor_msgs/CompressedImage`, which
   makes the color camera usable by normal ROS image tools.
+- Run a persistent, localhost-only bridge for Python and MATLAB with newest-
+  frame JPEG delivery and command deadman timeouts.
 - Build the protocol-only library with no ROS transport dependencies.
 
 The H.264 camera, AAC microphone, object/motion detection, iBeacon, odometry,
@@ -143,6 +151,23 @@ The bridge publishes standard compressed images on
 that topic without knowing about `roller_eye/frame`. Because the output type is
 standard, it is also a cleaner boundary for a later ROS 1-to-ROS 2 bridge.
 
+### Control from Python or MATLAB
+
+Keep one driver process connected to ROS while a Python or MATLAB program
+captures frames, processes them, and refreshes motion commands:
+
+```sh
+moorebot-scout bridge
+```
+
+The bridge prints its two local endpoints and stays open until Ctrl-C. It uses
+one localhost port for JSON commands and another for JPEG frames, so camera
+processing cannot block motor updates. A velocity is valid only for the short
+deadline supplied with that command; an expired or disconnected client causes
+the bridge to publish zero velocity. See the [Python and MATLAB integration
+guide](integrations/README.md) for installation, API examples, and continuous
+camera/command loops.
+
 ### Send a short motion command
 
 This example sends `[vx, vy, vtheta] = [0.1, 0, 0]` for 500 ms, then sends a
@@ -225,6 +250,7 @@ The crate deliberately separates protocol work from transport:
 ```text
 Rust application
   ├─ keyboard control + Desktop picture saving
+  ├─ localhost bridge for Python and MATLAB
   ├─ motion + media + sensor codecs (no ROS installation required)
   └─ ROS 1 transport (`rosrust`, bounded raw wire messages)
           ├─ selects the computer's route automatically

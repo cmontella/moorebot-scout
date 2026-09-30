@@ -6,6 +6,7 @@ on:
       - .github/workflows/release.yml
       - Cargo.lock
       - Cargo.toml
+      - integrations/**
       - src/**
   push:
     tags:
@@ -54,14 +55,20 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist
-          tar -C "target/${{ matrix.target }}/release" -czf "dist/${{ matrix.package }}" moorebot-scout
+          mkdir -p package-root
+          cp "target/${{ matrix.target }}/release/moorebot-scout" package-root/
+          cp -R integrations package-root/
+          tar -C package-root -czf "dist/${{ matrix.package }}" moorebot-scout integrations
       - name: Package executable
         if: matrix.platform == 'windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist
-          Copy-Item -LiteralPath "target/${{ matrix.target }}/release/moorebot-scout.exe" -Destination "dist/moorebot-scout.exe"
-          Compress-Archive -LiteralPath "target/${{ matrix.target }}/release/moorebot-scout.exe" -DestinationPath "dist/${{ matrix.package }}"
+          New-Item -ItemType Directory -Force -Path package-root
+          Copy-Item -LiteralPath "target/${{ matrix.target }}/release/moorebot-scout.exe" -Destination "package-root/moorebot-scout.exe"
+          Copy-Item -LiteralPath integrations -Destination "package-root/integrations" -Recurse
+          Copy-Item -LiteralPath "package-root/moorebot-scout.exe" -Destination "dist/moorebot-scout.exe"
+          Compress-Archive -Path "package-root/*" -DestinationPath "dist/${{ matrix.package }}"
       - name: Upload executable package
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

@@ -185,3 +185,27 @@ not add a physical calibration layer. Recorded-message fixtures, automated
 hardware-gated tests, cross-firmware comparison, and the currently unexposed
 service clients remain follow-up work rather than prerequisites for using the
 tested driver commands.
+
+## Local integration bridge protocol
+
+`moorebot-scout bridge` is a local application boundary for Python and MATLAB;
+it is not a new Scout firmware protocol. It listens only on loopback addresses
+and maintains the ROS publishers and subscribers inside the Rust process.
+
+Protocol version 1 uses two TCP connections:
+
+- The control connection is newline-delimited JSON. The server sends a `hello`
+  object first. A `velocity` request contains finite `vx`, `vy`, `vtheta`, and
+  `timeout_ms` values. `stop` clears the command immediately, and `ping`
+  returns `pong`.
+- The camera connection is pull-based. A client writes one byte with value
+  `1`; the server waits for a frame newer than the last one returned to that
+  connection, then writes a four-byte unsigned big-endian length followed by
+  that many JPEG bytes.
+
+Control lines are limited to 4 KiB. Camera payloads have the same 16 MiB bound
+as the ROS media decoder. The server allows at most four camera clients and
+drops intermediate frames for slow clients. The active motion command expires
+unless it is refreshed within its requested deadline; disconnecting the sole
+control client also clears it. The command and camera connections use separate
+ports so a slow decoder cannot delay control traffic.
