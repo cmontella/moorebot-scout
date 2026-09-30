@@ -47,3 +47,7 @@ jobs:
         run: cargo +stable doc --all-features --no-deps --locked
       - name: Validate package metadata
         run: cargo +stable metadata --locked --format-version 1 --no-deps
+      - name: Test Python bridge client
+        env:
+          PYTHONPATH: integrations/python/src
+        run: python -m unittest discover -s integrations/python/tests -v

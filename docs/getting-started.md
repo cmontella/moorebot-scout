@@ -110,10 +110,12 @@ newest package for your computer:
 | 64-bit Windows | `moorebot-scout-x86_64-pc-windows-msvc.zip` |
 | 64-bit Linux | `moorebot-scout-x86_64-unknown-linux-gnu.tar.gz` |
 
-Extract the downloaded package. It contains just `moorebot-scout` on macOS or
-Linux, or `moorebot-scout.exe` on Windows. You do not need to install Rust,
-ROS, Git, Python, or MATLAB. Windows users can also download the standalone
-`moorebot-scout.exe` release asset directly instead of the ZIP.
+Extract the downloaded package. It contains `moorebot-scout` on macOS/Linux or
+`moorebot-scout.exe` on Windows, plus an `integrations` folder with optional
+Python and MATLAB clients. You do not need to install Rust, ROS, Git, Python,
+or MATLAB for normal keyboard driving. Windows users can also download the
+standalone `moorebot-scout.exe` release asset directly instead of the ZIP; use
+the ZIP when you need the language clients.
 
 These early releases are not yet code-signed. Windows SmartScreen or macOS
 Gatekeeper may therefore ask you to confirm that you trust the download. Only
