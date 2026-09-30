@@ -4,6 +4,9 @@ This guide assumes you are new to robots and ROS. By the end, you will have
 downloaded one program, connected it to a Moorebot Scout, driven with WASD,
 saved camera pictures with Space, and optionally inspected the robot's sensors.
 
+After completing this setup, students working on camera control can continue
+with the [vision-based blue-line-following lab](lab-vision-line-following.md).
+
 ## What is the Moorebot Scout?
 
 The Scout is a small mobile monitoring robot built on Linux and ROS. It has four
