@@ -25,6 +25,29 @@ defaults, not secrets. Change them through the supported Moorebot setup process
 before using the robot on a shared network. Do not place classroom passwords,
 private keys, or diagnostic captures containing credentials in GitHub issues.
 
+## Router Wi-Fi credentials
+
+`wifi setup` sends the destination SSID and password through the native
+`/WiFiNode/switch_wifi_ssidkey` ROS service. ROS 1 provides neither encryption
+nor peer authentication; the selected master can direct the credentials to
+the service endpoint it returns. Use only a trusted Scout and master on the
+isolated robot network described above.
+
+The CLI hides interactive password input and offers a bounded
+`--password-stdin` option for automation. It does not accept a plaintext
+password argument, print credentials in diagnostic messages, or intentionally
+save them in host files. These measures do not secure the robot's storage or
+logs: the published firmware persists network credentials and includes them
+in some logging paths.
+
+The initial client accepts only 1–32 printable ASCII bytes for the SSID and
+8–63 for the password, excluding single quotes, double quotes, and backslashes.
+This conservative subset accommodates the stock firmware's shell and
+configuration interpolation; it does not claim to repair that firmware.
+Open networks and raw 64-character PSKs are not supported. The feature is
+source-backed and has not yet been verified on hardware or across firmware
+versions. A queued response is not proof that the robot joined the router.
+
 ## Input limits
 
 The project checks every variable-length field in its own ROS codecs before
@@ -42,12 +65,21 @@ scope are in [`docs/protocol.md`](docs/protocol.md#security-and-resource-limit-a
 
 The optional default `ros1` feature pins a Moorebot-specific `rosrust` fork at
 an exact Git revision. The fork checks the outer TCPROS length before allocating
-the body and caps connection headers at 64 KiB. Before starting ROS, each CLI
-command also selects a process-wide body ceiling: 8 KiB for discovery, motion,
+the body and caps connection headers at 64 KiB. Before starting ROS, commands
+using that transport select a process-wide body ceiling: 8 KiB for discovery, motion,
 and sensor monitoring, or 16 MiB + 1 KiB for camera commands. The transport's
 fixed staging queue is therefore bounded by both message count and bytes.
 The allocation-limit change has been submitted upstream as [`rosrust` PR
 #221](https://github.com/adnanademovic/rosrust/pull/221).
+
+General `rosrust` service calls are outside that patch's allocation limits.
+Wi-Fi setup instead uses a dedicated connection with a single 1–60-second
+request deadline, a 16 KiB lookup HTTP header limit, a 64 KiB lookup body limit,
+and a 64 KiB/128-field service handshake limit. A successful reply must contain
+exactly one status byte; failure text is capped at 1 KiB and discarded. The
+client checks the service MD5 before sending credentials and never retries
+their transmission automatically. These bounds apply only to this dedicated
+Wi-Fi path, not to arbitrary ROS service clients.
 
 Cargo substitutes crates.io versions for Git dependencies when it verifies a
 publishable archive. Because crates.io's `rosrust` does not yet contain these

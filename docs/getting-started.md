@@ -195,8 +195,14 @@ reply confirms the basic route.
 
 ### Option B: connect the Scout to an isolated home-router network
 
-Use Moorebot's supported phone-app setup rather than editing Linux networking
-files over SSH. Editing `/etc/hostapd/hostapd.conf` only changes the network the
+Moorebot's supported phone-app setup is described below. The Rust driver also
+offers `./moorebot-scout wifi setup --ssid "Robot Lab"` with a hidden password
+prompt while connected to the Scout's Direct network. That alternative is
+source-backed but not yet verified on hardware; read the [Rust router setup
+procedure](home-network.md#configure-router-mode-with-the-rust-driver), including
+its credential restrictions and how to verify the new connection.
+
+Editing `/etc/hostapd/hostapd.conf` only changes the network the
 Scout creates in Wi-Fi Direct mode; it does not configure the Scout to join a
 home router.
 

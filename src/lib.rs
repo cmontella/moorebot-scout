@@ -13,6 +13,7 @@ pub mod robot;
 pub mod sensors;
 pub mod services;
 pub mod topics;
+pub mod wifi;
 
 #[cfg(feature = "ros1")]
 pub mod ros1;

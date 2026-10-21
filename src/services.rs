@@ -1,8 +1,7 @@
 //! Known services found in the first-party Scout source release.
 //!
-//! These are intentionally discovery-only in this first version. Their exact
-//! behavior and firmware compatibility need to be verified on physical
-//! hardware before the driver makes them callable.
+//! Most services remain discovery-only. Wi-Fi provisioning has a dedicated,
+//! bounded transport in `ros1::provision_wifi` when `ros1` is enabled.
 
 pub const ADJUST_LIGHT: &str = "/CoreNode/adjust_light";
 pub const NIGHT_STATUS: &str = "/CoreNode/night_get";
@@ -17,6 +16,7 @@ pub const ALGO_MOVE: &str = "/UtilNode/algo_move";
 pub const ALGO_ROLL: &str = "/UtilNode/algo_roll";
 pub const RECORD_START: &str = "/RecorderAgentNode/record_start";
 pub const RECORD_STOP: &str = "/RecorderAgentNode/record_stop";
+pub const WIFI_SWITCH_SSID_KEY: &str = "/WiFiNode/switch_wifi_ssidkey";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct KnownService {
@@ -26,6 +26,11 @@ pub struct KnownService {
 }
 
 pub const KNOWN_SERVICES: &[KnownService] = &[
+    KnownService {
+        name: WIFI_SWITCH_SSID_KEY,
+        service_type: "roller_eye/wifi_switch_ssid_key",
+        capability: "join a Wi-Fi router (request acceptance only)",
+    },
     KnownService {
         name: ADJUST_LIGHT,
         service_type: "roller_eye/adjust_ligth",
