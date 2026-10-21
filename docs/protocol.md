@@ -195,7 +195,9 @@ and maintains the ROS publishers and subscribers inside the Rust process.
 Protocol version 1 uses two TCP connections:
 
 - The control connection is newline-delimited JSON. The server sends a `hello`
-  object first. A `velocity` request contains finite `vx`, `vy`, `vtheta`, and
+  object first for the sole control owner. Other clients receive an immediate
+  error with `code: "busy"` and are disconnected without changing the owner's
+  motion. A `velocity` request contains finite `vx`, `vy`, `vtheta`, and
   `timeout_ms` values. `stop` clears the command immediately, and `ping`
   returns `pong`.
 - The camera connection is pull-based. A client writes one byte with value
