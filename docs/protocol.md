@@ -104,6 +104,10 @@ every live subscription keeps only its newest pending message:
 | complete battery body | 260 bytes | TCPROS length checked before body allocation |
 | each TCPROS connection header | 64 KiB | length checked before header allocation |
 | each application camera/sensor queue | 1 message | newer decoded data replaces backlog |
+| Wi-Fi service lookup HTTP header/body | 16 KiB / 64 KiB | bounded header read and body length checked before allocation |
+| Wi-Fi service handshake | 64 KiB, 128 fields | length checked before allocation; field count checked while parsing |
+| Wi-Fi successful service reply | exactly 1 byte | length checked before allocation; exact response shape required |
+| Wi-Fi service failure text | 1 KiB | length checked before allocation; text discarded, never shown |
 
 The audit also covered integer conversions, arithmetic used for allocations,
 all other `Vec` and string construction, motion timing and bounds, unsafe code,
@@ -120,9 +124,11 @@ elsewhere on the reachable network. These properties matter because ROS 1 has
 no built-in peer authentication. Connect only to a Scout or ROS master you
 trust, on an isolated robot network; do not expose the driver or ROS master to
 the internet. Transport dependency modernization remains release-blocking work.
-TCPROS service payloads are also outside the current patch's scope; the driver
-does not call robot services yet, and service support must not be added until
-that path has equivalent bounds.
+The pinned `rosrust` patch does not bound general TCPROS service payloads. The
+Wi-Fi setup client uses its own dedicated bounded lookup and service transport,
+with the limits listed above; these guarantees do not extend to other
+`rosrust` service clients. Additional robot service support needs equivalent
+bounds.
 
 The Scout's ROS graph advertises XML-RPC, topic, and service endpoints using the
 device-only hostname `linaro-alip`. The pinned transport fork applies an exact,
@@ -145,7 +151,7 @@ non-negative, and integral.
 
 ## High-interest service inventory
 
-These services exist in the source tree but are intentionally discovery-only
+The services below exist in the source tree but are intentionally discovery-only
 until a real robot confirms their registered type, MD5, accepted values, and
 side effects.
 
@@ -170,6 +176,55 @@ Notably, the supplemental Python `go home` experiment sends the literal name
 return-to-dock branch, so the experiment is not sufficient evidence of a
 working command.
 
+## Router Wi-Fi provisioning service
+
+The `wifi setup` command implements the native ROS service
+`/WiFiNode/switch_wifi_ssidkey`, type `roller_eye/wifi_switch_ssid_key`, with MD5
+`879dd501d4c8e7d6703c458f6fc7737c`. Its request is an `int8 mode` followed by ROS
+strings `ssid` and `key`; its response is a single `int8 status`. Each string
+has a little-endian `uint32` byte length followed by the UTF-8 bytes.
+See the first-party [service definition](https://github.com/Pilot-Labs-Dev/Scout-open-source/blob/c599c1a906d6919640cf11b2d6adb30d08b100d2/roller_eye/srv/wifi_switch_ssid_key.srv).
+
+The request uses public mode `1` for router/station mode. The source maps this
+to its internal station enum, queues the asynchronous switch, and returns
+status `0`. That response acknowledges the request only; it does not report a
+successful association or DHCP lease. If the connection drops after request
+transmission without a valid reply, the result is unknown and the client does
+not retry automatically. Verify the Scout separately at its router-assigned
+address with `--master http://ROBOT_IP:11311 discover`.
+The [firmware handler](https://github.com/Pilot-Labs-Dev/Scout-open-source/blob/c599c1a906d6919640cf11b2d6adb30d08b100d2/roller_eye/src/nodes/wifi_node.cpp#L316)
+defines the acknowledgement behavior.
+
+The library entry point is
+`ros1::provision_wifi(&Ros1Config, &WifiCredentials, Duration)`. It does not
+require `ros1::init` or create a global ROS session. A single 1–60-second
+deadline covers service lookup, DNS wait, connection, handshake, sending, and
+acknowledgement. Peer-supplied lengths are checked before body allocation using
+the limits in the audit table above. The service's MD5 must match before
+credentials are sent, and its type is checked when supplied. The exact
+`linaro-alip` service hostname is mapped to the reached master's IP without
+changing system name resolution. These checks confirm protocol compatibility,
+not peer identity.
+
+Credential validation limits the SSID to 1–32 printable ASCII bytes and the
+password to 8–63 printable ASCII bytes, excluding single quotes, double quotes,
+and backslashes in both. This is a deliberately narrow subset: the published
+firmware interpolates these fields into shell/configuration text without
+safe escaping on this service path. Open networks and raw 64-character PSKs
+are not supported. Debug output redacts both fields; host-side errors do not
+include request contents. The firmware itself persists credentials and has
+logging paths that include them; see its [command construction](https://github.com/Pilot-Labs-Dev/Scout-open-source/blob/c599c1a906d6919640cf11b2d6adb30d08b100d2/roller_eye/src/pltlibplus/wifi_ops.cpp#L496)
+and [station setup script](https://github.com/Pilot-Labs-Dev/Scout-open-source/blob/c599c1a906d6919640cf11b2d6adb30d08b100d2/roller_eye/scripts/wifi_start_sta.sh#L33).
+
+This implementation is source-backed and has **not been exercised against a
+physical Scout**. The app's proprietary communication layer is unavailable in
+the source release; this service provides the equivalent native Wi-Fi change,
+not an implementation of the app's account or cloud protocol. Another firmware
+limitation is that successful setup appends a previously unseen SSID to saved
+networks, but does not replace the saved password for an existing SSID. A
+successful immediate connection therefore does not establish that a changed
+password will survive a reboot; see the [saved-network update](https://github.com/Pilot-Labs-Dev/Scout-open-source/blob/c599c1a906d6919640cf11b2d6adb30d08b100d2/roller_eye/src/pltlibplus/wifi_ops.cpp#L159).
+
 ## Hardware test record
 
 The following paths have been exercised against a physical Scout:
@@ -179,6 +234,9 @@ The following paths have been exercised against a physical Scout:
 - JPEG camera decoding and picture capture;
 - live IMU, time-of-flight, light, and battery subscriptions and decoding; and
 - zero-velocity publication on normal teleop exit.
+
+Wi-Fi provisioning is covered by local protocol/transport tests only; it is
+not part of the hardware test record above.
 
 The driver reports the units declared by the ROS message definitions and does
 not add a physical calibration layer. Recorded-message fixtures, automated

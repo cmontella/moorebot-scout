@@ -59,6 +59,8 @@ standard `[vx, vy, vtheta]` interface and do not require a local ROS install.
   makes the color camera usable by normal ROS image tools.
 - Run a persistent, localhost-only bridge for Python and MATLAB with newest-
   frame JPEG delivery and command deadman timeouts.
+- Submit router Wi-Fi credentials through the Scout's native ROS service
+  (source-backed; not yet verified on hardware).
 - Build the protocol-only library with no ROS transport dependencies.
 
 The H.264 camera, AAC microphone, object/motion detection, iBeacon, odometry,
@@ -121,6 +123,31 @@ moorebot-scout --master http://192.168.1.73:11311
 
 If automatic route selection cannot work in an unusual network setup,
 `--advertise-address` remains available as a manual troubleshooting override.
+
+### Set up router Wi-Fi
+
+While the computer is connected to the Scout's Wi-Fi Direct network, run:
+
+```sh
+moorebot-scout wifi setup --ssid "Robot Lab"
+```
+
+The password prompt hides input. For automation, `--password-stdin` reads one
+bounded line from standard input; there is no password command-line option.
+The initial implementation accepts a 1–32-byte SSID and an 8–63-byte password,
+both printable ASCII without single quotes, double quotes, or backslashes.
+Open networks are not supported. These restrictions accommodate the stock
+firmware's handling of credentials.
+
+This command uses a source-backed ROS service and has **not been verified on a
+physical Scout**. An accepted request means the firmware queued the change,
+not that it joined the router. A disconnect or missing reply leaves the result
+unknown. Reconnect the computer to the destination robot network, find the
+Scout's new address in the router's DHCP list, and verify it with
+`moorebot-scout --master http://ROBOT_IP:11311 discover`. The command does not
+change the computer's Wi-Fi settings. See the [router setup
+guide](docs/home-network.md#configure-router-mode-with-the-rust-driver) for the
+full procedure, timeout option, and credential handling limits.
 
 ### Monitor the undocumented sensors
 

@@ -4,6 +4,10 @@
 //! distribution installed. The Scout itself provides the ROS master and the
 //! message publishers/subscribers.
 
+mod wifi;
+pub use crate::wifi::{WifiProvisioningError, WifiProvisioningResult};
+pub use wifi::provision_wifi;
+
 use crate::{
     codec::{write_bytes, write_string, write_u32},
     frame::{MAX_FRAME_DATA_BYTES, ScoutFrame, StreamType},

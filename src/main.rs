@@ -19,11 +19,12 @@ use moorebot_scout::{
     },
     sensors::{BatteryStatus, IlluminanceSample, ImuSample, RangeSample},
     services, topics,
+    wifi::WifiCredentials,
 };
 use std::{
     error::Error,
     fs::{self, OpenOptions},
-    io::{self, Read, Write},
+    io::{self, IsTerminal, Read, Write},
     net::SocketAddr,
     path::{Path, PathBuf},
     process::{Command as ProcessCommand, Stdio},
@@ -84,6 +85,33 @@ enum Command {
     CameraBridge(CameraBridgeArgs),
     /// Run a local Python/MATLAB command and camera bridge.
     Bridge(BridgeArgs),
+    /// Configure the Scout to join a Wi-Fi router.
+    Wifi(WifiArgs),
+}
+
+#[derive(Args)]
+struct WifiArgs {
+    #[command(subcommand)]
+    command: WifiCommand,
+}
+
+#[derive(Subcommand)]
+enum WifiCommand {
+    /// Send router credentials while connected to the Scout's current network.
+    Setup(WifiSetupArgs),
+}
+
+#[derive(Args)]
+struct WifiSetupArgs {
+    /// Router network name (SSID), preserving spaces and capitalization.
+    #[arg(long)]
+    ssid: String,
+    /// Read the password from one stdin line instead of a hidden terminal prompt.
+    #[arg(long)]
+    password_stdin: bool,
+    /// Maximum time for the provisioning request, not for joining the router.
+    #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u64).range(1..=60))]
+    timeout_seconds: u64,
 }
 
 #[derive(Args)]
@@ -212,7 +240,7 @@ fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_log_filter))
         .init();
     if let Err(error) = run(cli) {
-        eprintln!("\nCould not start the Moorebot Scout driver:\n  {error}");
+        eprintln!("\nMoorebot Scout command failed:\n  {error}");
         eprintln!("\nRun with --verbose if an instructor needs the ROS diagnostics.");
         std::process::exit(1);
     }
@@ -238,6 +266,9 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
         Command::Monitor(args) => monitor(&config, args),
         Command::CameraBridge(args) => camera_bridge(&config, args),
         Command::Bridge(args) => integration_bridge(&config, args),
+        Command::Wifi(args) => match args.command {
+            WifiCommand::Setup(args) => wifi_setup(&config, args),
+        },
     }
 }
 
@@ -250,8 +281,150 @@ fn command_node_name(command: &Command, process_id: u32) -> String {
         Command::Monitor(_) => "moorebot_scout_monitor",
         Command::CameraBridge(_) => "moorebot_scout_camera_bridge",
         Command::Bridge(_) => "moorebot_scout_integration_bridge",
+        Command::Wifi(_) => "moorebot_scout_wifi",
     };
     format!("{base}_{process_id}")
+}
+
+fn wifi_setup(config: &Ros1Config, args: WifiSetupArgs) -> Result<(), Box<dyn Error>> {
+    let password = if args.password_stdin {
+        read_wifi_password(io::stdin().lock())?
+    } else {
+        prompt_wifi_password()?
+    };
+    let credentials = WifiCredentials::new(args.ssid, password)?;
+    println!(
+        "Sending router settings to the Scout. Its Wi-Fi connection may close during the switch."
+    );
+    let result = ros1::provision_wifi(
+        config,
+        &credentials,
+        Duration::from_secs(args.timeout_seconds),
+    )?;
+    match result {
+        ros1::WifiProvisioningResult::Accepted => {
+            println!("Scout accepted the settings; connection to the router is not yet verified.");
+            print_wifi_reconnect_steps();
+            Ok(())
+        }
+        ros1::WifiProvisioningResult::DeliveryUncertain => {
+            print_wifi_reconnect_steps();
+            Err("The connection closed or timed out after sending settings, so the result is unknown. Check the Scout on the router before retrying.".into())
+        }
+    }
+}
+
+fn print_wifi_reconnect_steps() {
+    println!("Reconnect this computer to the target router's Wi-Fi.");
+    println!("Find the Scout's new IP in the router's connected-device/DHCP list, then run:");
+    println!("  moorebot-scout --master http://<SCOUT-IP>:11311 discover");
+    println!(
+        "If it does not join, use the Scout's Wi-Fi mode button to return to Wi-Fi Direct and reconnect."
+    );
+}
+
+/// Read one bounded line, preserving password spaces and accepting LF or CRLF.
+fn read_wifi_password(mut reader: impl Read) -> io::Result<String> {
+    let mut bytes = Vec::new();
+    let mut byte = [0_u8; 1];
+    while reader.read(&mut byte)? != 0 {
+        bytes.push(byte[0]);
+        if bytes.len() > 65 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Wi-Fi password exceeds 63 bytes",
+            ));
+        }
+        if byte[0] == b'\n' {
+            bytes.pop();
+            if bytes.last() == Some(&b'\r') {
+                bytes.pop();
+            }
+            break;
+        }
+    }
+    if bytes.len() > 63 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Wi-Fi password exceeds 63 bytes",
+        ));
+    }
+    String::from_utf8(bytes).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Wi-Fi password must be printable ASCII",
+        )
+    })
+}
+
+fn prompt_wifi_password() -> io::Result<String> {
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "A terminal is required for the hidden password prompt; use --password-stdin for a pipe",
+        ));
+    }
+    print!("Router password (hidden): ");
+    io::stdout().flush()?;
+    enable_raw_mode()?;
+    // Only restore raw mode here; no keyboard protocol changes are needed.
+    let terminal = RawTerminal {
+        keyboard_enhancements: false,
+    };
+    let result = read_hidden_wifi_password();
+    drop(terminal);
+    println!();
+    result
+}
+
+fn read_hidden_wifi_password() -> io::Result<String> {
+    let mut password = String::new();
+    let mut too_long = false;
+    loop {
+        let Event::Key(key) = event::read()? else {
+            continue;
+        };
+        if key.kind == KeyEventKind::Release {
+            continue;
+        }
+        if key.code == KeyCode::Esc
+            || (key.modifiers.contains(KeyModifiers::CONTROL)
+                && matches!(key.code, KeyCode::Char('c' | 'd')))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "Wi-Fi setup cancelled",
+            ));
+        }
+        match key.code {
+            KeyCode::Enter => {
+                if too_long {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "Wi-Fi password exceeds 63 bytes; run setup again to re-enter it",
+                    ));
+                }
+                return Ok(password);
+            }
+            KeyCode::Backspace => {
+                password.pop();
+            }
+            KeyCode::Char(ch)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                if too_long || password.len() + ch.len_utf8() > 63 {
+                    // Consume the rest of a paste while echo remains disabled.
+                    // Never truncate and send a different password silently.
+                    too_long = true;
+                } else {
+                    password.push(ch);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Shut ROS down only after publishers and subscribers declared later in the
@@ -289,8 +462,13 @@ fn discover(config: &Ros1Config) -> Result<(), Box<dyn Error>> {
     println!("Registered services:");
     for service in registered_services {
         if let Some(known) = services::known_service(&service.name) {
+            let availability = if service.name == services::WIFI_SWITCH_SSID_KEY {
+                "wifi setup; hardware unverified"
+            } else {
+                "research-only"
+            };
             println!(
-                "  {:<42} {} [research-only: {}]",
+                "  {:<42} {} [{availability}: {}]",
                 service.name, known.service_type, known.capability
             );
         } else {
@@ -1188,6 +1366,80 @@ fn command_output(program: &Path, arguments: &[&str]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wifi_setup_keeps_password_out_of_arguments_and_bounds_timeout() {
+        let cli = Cli::try_parse_from([
+            "moorebot-scout",
+            "wifi",
+            "setup",
+            "--ssid",
+            "Robot Lab",
+            "--password-stdin",
+            "--timeout-seconds",
+            "15",
+        ])
+        .unwrap();
+        let Some(Command::Wifi(WifiArgs {
+            command: WifiCommand::Setup(args),
+        })) = cli.command
+        else {
+            panic!("expected Wi-Fi setup");
+        };
+        assert_eq!(args.ssid, "Robot Lab");
+        assert!(args.password_stdin);
+        assert_eq!(args.timeout_seconds, 15);
+        for timeout in ["0", "61"] {
+            assert!(
+                Cli::try_parse_from([
+                    "moorebot-scout",
+                    "wifi",
+                    "setup",
+                    "--ssid",
+                    "Robot Lab",
+                    "--timeout-seconds",
+                    timeout,
+                ])
+                .is_err()
+            );
+        }
+        assert!(
+            Cli::try_parse_from([
+                "moorebot-scout",
+                "wifi",
+                "setup",
+                "--ssid",
+                "Robot Lab",
+                "--password",
+                "never-on-the-command-line",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn wifi_password_line_preserves_spaces_and_bounds_input() {
+        for input in [" passphrase ", " passphrase \n", " passphrase \r\n"] {
+            assert_eq!(
+                read_wifi_password(input.as_bytes()).unwrap(),
+                " passphrase "
+            );
+        }
+        assert_eq!(
+            read_wifi_password(b"first-password\nsecond-line".as_slice()).unwrap(),
+            "first-password"
+        );
+        let longest = "x".repeat(63);
+        for ending in ["", "\n", "\r\n"] {
+            assert_eq!(
+                read_wifi_password(format!("{longest}{ending}").as_bytes()).unwrap(),
+                longest
+            );
+        }
+        assert!(read_wifi_password("x".repeat(64).as_bytes()).is_err());
+        assert!(read_wifi_password("x".repeat(10_000).as_bytes()).is_err());
+        assert!(read_wifi_password([0xff, b'\n'].as_slice()).is_err());
+    }
 
     #[test]
     fn no_subcommand_selects_student_teleop_defaults() {
