@@ -16,7 +16,7 @@ const PROTOCOL_VERSION: u8 = 1;
 const MAX_CONTROL_LINE_BYTES: u64 = 4 * 1024;
 const MAX_CAMERA_CLIENTS: usize = 4;
 const NETWORK_POLL_INTERVAL: Duration = Duration::from_millis(100);
-const CAMERA_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
+const CLIENT_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, Debug)]
 pub struct BridgeOptions {
@@ -199,16 +199,32 @@ fn run_control_listener(
     running: Arc<AtomicBool>,
     maximum_timeout: Duration,
 ) {
+    let mut owner: Option<JoinHandle<()>> = None;
     while running.load(Ordering::SeqCst) {
         match listener.accept() {
             Ok((stream, _)) => {
+                if owner.as_ref().is_some_and(JoinHandle::is_finished) {
+                    let _ = owner.take().unwrap().join();
+                }
+                if owner.is_some() {
+                    let _ = reject_control_client(stream);
+                    continue;
+                }
+
                 if let Ok(mut state) = motion.lock() {
                     state.stop();
                 }
-                let _ = serve_control_client(stream, &motion, &running, maximum_timeout);
-                if let Ok(mut state) = motion.lock() {
-                    state.stop();
-                }
+                let motion = Arc::clone(&motion);
+                let running = Arc::clone(&running);
+                owner = thread::Builder::new()
+                    .name("scout-bridge-control-client".into())
+                    .spawn(move || {
+                        let _ = serve_control_client(stream, &motion, &running, maximum_timeout);
+                        if let Ok(mut state) = motion.lock() {
+                            state.stop();
+                        }
+                    })
+                    .ok();
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 thread::sleep(NETWORK_POLL_INTERVAL);
@@ -216,6 +232,22 @@ fn run_control_listener(
             Err(_) => thread::sleep(NETWORK_POLL_INTERVAL),
         }
     }
+    if let Some(owner) = owner {
+        let _ = owner.join();
+    }
+}
+
+fn reject_control_client(mut stream: TcpStream) -> io::Result<()> {
+    stream.set_write_timeout(Some(CLIENT_WRITE_TIMEOUT))?;
+    write_json_line(
+        &mut stream,
+        &json!({
+            "ok": false,
+            "type": "error",
+            "code": "busy",
+            "message": "Another client already controls the bridge. Close or delete the existing MATLAB/Python Scout client, then reconnect.",
+        }),
+    )
 }
 
 fn serve_control_client(
@@ -226,6 +258,7 @@ fn serve_control_client(
 ) -> io::Result<()> {
     stream.set_nodelay(true)?;
     stream.set_read_timeout(Some(NETWORK_POLL_INTERVAL))?;
+    stream.set_write_timeout(Some(CLIENT_WRITE_TIMEOUT))?;
     write_json_line(
         &mut stream,
         &json!({
@@ -392,7 +425,7 @@ fn serve_camera_client(
 ) -> io::Result<()> {
     stream.set_nodelay(true)?;
     stream.set_read_timeout(Some(NETWORK_POLL_INTERVAL))?;
-    stream.set_write_timeout(Some(CAMERA_WRITE_TIMEOUT))?;
+    stream.set_write_timeout(Some(CLIENT_WRITE_TIMEOUT))?;
     let (lock, available) = &**shared;
     let mut seen_generation = 0;
 
@@ -459,6 +492,38 @@ mod tests {
         }
     }
 
+    fn start_test_bridge() -> IntegrationBridge {
+        IntegrationBridge::start(
+            BridgeOptions {
+                control_address: "127.0.0.1:0".parse().unwrap(),
+                camera_address: "127.0.0.1:0".parse().unwrap(),
+                maximum_command_timeout: Duration::from_secs(5),
+            },
+            Arc::new(AtomicBool::new(true)),
+        )
+        .unwrap()
+    }
+
+    fn connect_control(bridge: &IntegrationBridge) -> TcpStream {
+        let stream = TcpStream::connect(bridge.control_address()).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        stream
+    }
+
+    fn arm_test_motion(control: &mut TcpStream) {
+        control
+            .write_all(
+                b"{\"type\":\"velocity\",\"vx\":0.1,\"vy\":0.0,\"vtheta\":0.0,\"timeout_ms\":5000}\n",
+            )
+            .unwrap();
+        assert_eq!(read_json_line(control)["ok"], true);
+    }
+
     #[test]
     fn motion_deadman_expires_to_zero() {
         let now = Instant::now();
@@ -509,6 +574,150 @@ mod tests {
         );
         assert_eq!(response["ok"], false);
         assert!(state.lock().unwrap().deadline.is_none());
+    }
+
+    #[test]
+    fn idle_control_owner_rejects_other_clients_without_waiting_for_disconnect() {
+        let bridge = start_test_bridge();
+        let mut owner = connect_control(&bridge);
+        assert_eq!(read_json_line(&mut owner)["type"], "hello");
+
+        let mut other = connect_control(&bridge);
+        let response = read_json_line(&mut other);
+        assert_eq!(response["ok"], false);
+        assert_eq!(response["type"], "error");
+        assert_eq!(response["code"], "busy");
+        assert!(response["message"].as_str().unwrap().contains("reconnect"));
+        assert_eq!(other.read(&mut [0_u8; 1]).unwrap(), 0);
+
+        owner.write_all(b"{\"type\":\"ping\"}\n").unwrap();
+        assert_eq!(read_json_line(&mut owner)["type"], "pong");
+        bridge.shutdown();
+    }
+
+    #[test]
+    fn rejected_clients_do_not_stop_or_replace_the_control_owners_motion() {
+        let bridge = start_test_bridge();
+        let mut owner = connect_control(&bridge);
+        assert_eq!(read_json_line(&mut owner)["type"], "hello");
+        arm_test_motion(&mut owner);
+        let original = *bridge.motion.lock().unwrap();
+        assert_ne!(original.command, ScoutTwist::zero());
+
+        for _ in 0..3 {
+            let mut other = connect_control(&bridge);
+            assert_eq!(read_json_line(&mut other)["code"], "busy");
+            drop(other);
+            owner.write_all(b"{\"type\":\"ping\"}\n").unwrap();
+            assert_eq!(read_json_line(&mut owner)["type"], "pong");
+            let current = *bridge.motion.lock().unwrap();
+            assert_eq!(current.command, original.command);
+            assert_eq!(current.deadline, original.deadline);
+        }
+
+        owner.write_all(b"{\"type\":\"stop\"}\n").unwrap();
+        assert_eq!(read_json_line(&mut owner)["type"], "stop");
+        assert_eq!(bridge.current_command(Instant::now()), ScoutTwist::zero());
+        bridge.shutdown();
+    }
+
+    #[test]
+    fn owner_disconnect_stops_motion_and_allows_reconnection() {
+        let bridge = start_test_bridge();
+        let mut owner = connect_control(&bridge);
+        assert_eq!(read_json_line(&mut owner)["type"], "hello");
+        arm_test_motion(&mut owner);
+        drop(owner);
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while bridge.motion.lock().unwrap().deadline.is_some() {
+            assert!(Instant::now() < deadline, "disconnect did not stop motion");
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(bridge.current_command(Instant::now()), ScoutTwist::zero());
+
+        // The worker may still be returning after it stops motion. A reconnect
+        // must be rejected promptly until that worker has fully exited.
+        let mut replacement = loop {
+            assert!(
+                Instant::now() < deadline,
+                "control ownership was not released"
+            );
+            let mut connection = connect_control(&bridge);
+            let response = read_json_line(&mut connection);
+            if response["type"] == "hello" {
+                break connection;
+            }
+            assert_eq!(response["code"], "busy");
+            thread::sleep(Duration::from_millis(10));
+        };
+
+        assert_eq!(bridge.current_command(Instant::now()), ScoutTwist::zero());
+        assert!(bridge.motion.lock().unwrap().deadline.is_none());
+        arm_test_motion(&mut replacement);
+        assert_ne!(bridge.current_command(Instant::now()), ScoutTwist::zero());
+        bridge.shutdown();
+    }
+
+    #[test]
+    fn shutdown_waits_for_idle_control_owner_to_close_and_stop() {
+        let bridge = start_test_bridge();
+        let mut owner = connect_control(&bridge);
+        assert_eq!(read_json_line(&mut owner)["type"], "hello");
+        arm_test_motion(&mut owner);
+        let motion = Arc::clone(&bridge.motion);
+        let started = Instant::now();
+
+        bridge.shutdown();
+
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(Arc::strong_count(&motion), 1);
+        assert_eq!(owner.read(&mut [0_u8; 1]).unwrap(), 0);
+        let motion = motion.lock().unwrap();
+        assert_eq!(motion.command, ScoutTwist::zero());
+        assert!(motion.deadline.is_none());
+    }
+
+    #[test]
+    fn waiting_for_camera_frames_does_not_block_control_responses() {
+        let bridge = start_test_bridge();
+        let mut control = connect_control(&bridge);
+        assert_eq!(read_json_line(&mut control)["type"], "hello");
+        let mut camera = TcpStream::connect(bridge.camera_address()).unwrap();
+
+        // Exercise both the wait for the first image and the wait for a new
+        // image after the preceding generation has already been consumed.
+        for generation in 0..2 {
+            camera.write_all(&[1]).unwrap();
+            camera
+                .set_read_timeout(Some(Duration::from_millis(250)))
+                .unwrap();
+            let waiting = camera.read(&mut [0_u8; 1]).unwrap_err();
+            assert!(matches!(
+                waiting.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+            ));
+
+            // No frame is published until both control responses arrive.
+            control.write_all(b"{\"type\":\"ping\"}\n").unwrap();
+            assert_eq!(read_json_line(&mut control)["type"], "pong");
+            arm_test_motion(&mut control);
+            assert_ne!(bridge.current_command(Instant::now()), ScoutTwist::zero());
+
+            let jpeg = vec![0xff, 0xd8, generation, 0xff, 0xd9];
+            bridge.frame_sink().publish(jpeg.clone());
+            camera
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut length = [0_u8; 4];
+            camera.read_exact(&mut length).unwrap();
+            assert_eq!(u32::from_be_bytes(length) as usize, jpeg.len());
+            let mut received = vec![0_u8; jpeg.len()];
+            camera.read_exact(&mut received).unwrap();
+            assert_eq!(received, jpeg);
+        }
+
+        bridge.shutdown();
     }
 
     #[test]

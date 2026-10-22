@@ -44,6 +44,12 @@ publishes the last valid command at 40 Hz. Every command has a short deadline;
 if the client disconnects, crashes, or fails to refresh it, the bridge switches
 to zero velocity. Ctrl-C in the bridge terminal also sends a stop.
 
+Wait for `Integration bridge ready. Commands: 127.0.0.1:43000 | camera:
+127.0.0.1:43001` before connecting a client. Only one MATLAB or Python client
+may own control at a time. An additional client receives an immediate
+`Another client already controls the bridge` error. Use the same client for
+images and movement, or close it before starting another example.
+
 ## 2. Use Python
 
 Python 3.10 or newer is recommended. From the extracted release directory:
@@ -86,16 +92,24 @@ The MATLAB client uses `tcpclient`, introduced in R2020b. In MATLAB, change to
 the extracted release directory and run:
 
 ```matlab
-addpath("integrations/matlab")
-scout = MoorebotScout();
-cleanup = onCleanup(@() delete(scout));
-
-while true
-    frame = scout.readImage();
-    % Segment or analyze frame here.
-    scout.setVelocity(0.08, 0.0, 0.0, 0.5);
+function runScout
+    addpath("integrations/matlab")
+    scout = MoorebotScout();
+    cleanup = onCleanup(@() delete(scout));
+    while true
+        frame = scout.readImage();
+        % Segment or analyze frame here.
+        scout.setVelocity(0.08, 0.0, 0.0, 0.5);
+    end
 end
 ```
+
+Save this in `runScout.m`. A function scope makes `onCleanup` close the client
+when the function returns, errors, or is interrupted. In a script or the
+Command Window, `scout` and `cleanup` remain in the workspace. Before replacing
+an existing connection, run `delete(scout); clear scout cleanup`. Merely
+assigning `scout = MoorebotScout()` again constructs the new connection while
+the previous one is still open.
 
 The ready-to-run live-camera example is in `integrations/matlab/examples`:
 
@@ -109,6 +123,31 @@ must also be made with the wheels clear.
 `readImage` decodes JPEG bytes in memory with the Java image library bundled
 with desktop MATLAB, so it does not write a temporary image file for every
 frame. The sample segmentation code uses ordinary MATLAB array operations.
+
+### Diagnose connection and camera delays
+
+If the constructor reports no bridge greeting, confirm the Rust terminal has
+reached the ready message and use its **commands** port (normally 43000), not
+the camera port (43001). Close other Scout clients. Older bridge versions
+leave a second client waiting silently; update the executable together with
+the integration files. If a fresh bridge still fails, capture its startup
+output and the MATLAB connection call instead of increasing the timeout.
+
+With an existing, connected `scout`, check control responsiveness without
+moving the robot and then measure camera receipt and decoding separately:
+
+```matlab
+tic; scout.ping(); toc
+samples = measureScoutCamera(scout, 30);
+```
+
+The timing helper sends no movement commands and opens no extra control
+connection. Frame receipt includes waiting for Scout to publish the next
+image; it is not pure network latency. The reported throughput excludes
+display and image analysis. A slow camera does not block the bridge's
+control socket, but a MATLAB loop that waits for each image before sending
+velocity still runs at the image-processing rate. If that interval exceeds
+the requested command timeout, the bridge intentionally stops movement.
 
 ## Coordinate convention
 
@@ -126,7 +165,9 @@ should send a fresh command for every processed frame.
 
 ## Local protocol
 
-The control port starts with one JSON `hello` line. Requests and responses are
+The control port starts with one JSON `hello` line for its sole owner, or an
+error line with `code: "busy"` if another owner is connected. Rejection never
+changes the existing owner's movement command. Requests and responses are
 newline-delimited JSON. Protocol version 1 accepts:
 
 ```json

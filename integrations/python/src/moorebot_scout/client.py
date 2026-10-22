@@ -46,11 +46,20 @@ class ScoutClient:
         self._camera: socket.socket | None = None
         self._closed = False
 
-        hello = self._read_response()
-        if hello.get("type") != "hello" or hello.get("protocol") != 1:
+        try:
+            hello = self._read_response()
+            if hello.get("type") != "hello" or hello.get("protocol") != 1:
+                raise BridgeError(f"unsupported bridge greeting: {hello!r}")
+            try:
+                command_timeout = float(hello["max_command_timeout_ms"]) / 1000.0
+            except (KeyError, TypeError, ValueError, OverflowError) as error:
+                raise BridgeError("invalid command timeout in bridge greeting") from error
+            if not math.isfinite(command_timeout) or command_timeout <= 0.0:
+                raise BridgeError("invalid command timeout in bridge greeting")
+            self.max_command_timeout = command_timeout
+        except BaseException:
             self.close(stop=False)
-            raise BridgeError(f"unsupported bridge greeting: {hello!r}")
-        self.max_command_timeout = float(hello["max_command_timeout_ms"]) / 1000.0
+            raise
 
     def __enter__(self) -> Self:
         return self

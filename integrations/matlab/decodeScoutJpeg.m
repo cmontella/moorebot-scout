@@ -11,8 +11,12 @@ if ~usejava("jvm")
 end
 
 stream = java.io.ByteArrayInputStream(typecast(jpeg(:), "int8"));
-cleanup = onCleanup(@() stream.close()); %#ok<NASGU>
-buffered = javax.imageio.ImageIO.read(stream);
+cleanup = onCleanup(@() stream.close());
+% ImageIO's InputStream overload may create a temporary disk cache. Supply
+% an explicit memory cache without changing MATLAB's global Java settings.
+imageStream = javax.imageio.stream.MemoryCacheImageInputStream(stream);
+imageCleanup = onCleanup(@() closeImageStream(imageStream));
+buffered = javax.imageio.ImageIO.read(imageStream);
 if isempty(buffered)
     error("MoorebotScout:Jpeg", "MATLAB could not decode the Scout JPEG.");
 end
@@ -30,4 +34,12 @@ rgb = zeros(height, width, 3, "uint8");
 rgb(:, :, 1) = reshape(red, width, height).';
 rgb(:, :, 2) = reshape(green, width, height).';
 rgb(:, :, 3) = reshape(blue, width, height).';
+end
+
+function closeImageStream(stream)
+try
+    stream.close();
+catch
+    % ImageIO closes ImageInputStream itself after a successful decode.
+end
 end
