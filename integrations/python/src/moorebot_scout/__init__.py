@@ -3,4 +3,4 @@
 from .client import BridgeError, ScoutClient
 
 __all__ = ["BridgeError", "ScoutClient"]
-__version__ = "0.3.0"
+__version__ = "0.3.1"
