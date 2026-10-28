@@ -93,9 +93,13 @@ def main() -> None:
         expression = f"addpath('{test_path}'); testCameraRecovery({ports[0]}, {ports[1]})"
         options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {"start_new_session": True}
         print(f"Testing camera recovery on mock ports {ports}", flush=True)
-        process = subprocess.Popen([args.matlab, "-batch", expression], **options)
+        process = subprocess.Popen([args.matlab, "-batch", expression],
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                   text=True, **options)
         try:
-            returncode = process.wait(timeout=180)
+            output, _ = process.communicate(timeout=180)
+            print(output, end="", flush=True)
+            returncode = process.returncode
         except subprocess.TimeoutExpired:
             # Terminate only the MATLAB process tree created by this runner.
             if os.name == "nt":

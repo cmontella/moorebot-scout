@@ -11,13 +11,18 @@ names = ["partial header", "partial payload", "invalid length", "invalid markers
 
 for index = 1:numel(names)
     caught = false;
+    started = tic;
     try
         scout.readJpeg();
     catch cause
         caught = true;
         if index <= 2
-            assert(strcmp(cause.identifier, "MoorebotScout:Connection"), ...
+            % MATLAB versions may throw their native read failure before
+            % readExact receives an empty result. Preserve either error.
+            assert(any(strcmp(cause.identifier, ...
+                ["MoorebotScout:Connection", "MATLAB:networklib:tcpclient:readFailed"])), ...
                 "Unexpected timeout error: %s", cause.identifier);
+            assert(toc(started) < 5, "Camera timeout exceeded its deadline.");
         else
             assert(strcmp(cause.identifier, "MoorebotScout:Protocol"), ...
                 "Unexpected framing error: %s", cause.identifier);
