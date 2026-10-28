@@ -87,6 +87,38 @@ class ScoutClientTests(unittest.TestCase):
         self.assertEqual(self.client.read_jpeg(), JPEG)
         self.assertEqual(self.client.read_jpeg(), JPEG)
 
+    def assert_camera_failure_can_reconnect(self, data: bytes) -> None:
+        camera, peer = socket.socketpair()
+        camera.settimeout(1.0)
+        self.client._camera = camera
+
+        def fail_frame() -> None:
+            with peer:
+                peer.recv(1)
+                peer.sendall(data)
+
+        sender = threading.Thread(target=fail_frame)
+        sender.start()
+        try:
+            with self.assertRaises(BridgeError):
+                self.client.read_jpeg()
+            self.client.ping()
+            self.assertEqual(self.client.read_jpeg(), JPEG)
+        finally:
+            sender.join(timeout=2.0)
+
+    def test_partial_camera_header_can_reconnect(self) -> None:
+        self.assert_camera_failure_can_reconnect(b"\x00\x00")
+
+    def test_partial_camera_payload_can_reconnect(self) -> None:
+        self.assert_camera_failure_can_reconnect(struct.pack(">I", len(JPEG)) + JPEG[:3])
+
+    def test_invalid_camera_length_can_reconnect(self) -> None:
+        self.assert_camera_failure_can_reconnect(struct.pack(">I", 0))
+
+    def test_invalid_jpeg_markers_can_reconnect(self) -> None:
+        self.assert_camera_failure_can_reconnect(struct.pack(">I", 4) + b"bad!")
+
     def test_rejects_timeout_before_sending(self) -> None:
         with self.assertRaises(ValueError):
             self.client.set_velocity(0.1, 0.0, 0.0, timeout=2.0)

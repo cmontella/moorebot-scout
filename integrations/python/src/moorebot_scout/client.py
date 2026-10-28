@@ -146,19 +146,27 @@ class ScoutClient:
 
         if self._closed:
             raise BridgeError("client is closed")
-        if self._camera is None:
-            self._camera = socket.create_connection(
-                (self._host, self._camera_port), self._timeout
-            )
-            self._camera.settimeout(self._timeout)
-        self._camera.sendall(b"\x01")
-        (length,) = struct.unpack(">I", self._receive_exact(self._camera, 4))
-        if length == 0 or length > _MAX_JPEG_BYTES:
-            raise BridgeError(f"invalid JPEG length from bridge: {length}")
-        jpeg = self._receive_exact(self._camera, length)
-        if not jpeg.startswith(b"\xff\xd8") or not jpeg.endswith(b"\xff\xd9"):
-            raise BridgeError("bridge returned data without JPEG markers")
-        return jpeg
+        try:
+            if self._camera is None:
+                self._camera = socket.create_connection(
+                    (self._host, self._camera_port), self._timeout
+                )
+                self._camera.settimeout(self._timeout)
+            self._camera.sendall(b"\x01")
+            (length,) = struct.unpack(">I", self._receive_exact(self._camera, 4))
+            if length == 0 or length > _MAX_JPEG_BYTES:
+                raise BridgeError(f"invalid JPEG length from bridge: {length}")
+            jpeg = self._receive_exact(self._camera, length)
+            if not jpeg.startswith(b"\xff\xd8") or not jpeg.endswith(b"\xff\xd9"):
+                raise BridgeError("bridge returned data without JPEG markers")
+            return jpeg
+        except BaseException:
+            # A partial response loses framing. Reconnect camera on retry,
+            # preserving the independent control session.
+            if self._camera is not None:
+                self._camera.close()
+                self._camera = None
+            raise
 
     def jpeg_frames(self) -> Iterator[bytes]:
         """Yield newly requested JPEG frames until the caller stops iteration."""

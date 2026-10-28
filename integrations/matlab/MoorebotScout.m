@@ -111,24 +111,31 @@ classdef MoorebotScout < handle
         function jpeg = readJpeg(obj)
             %READJPEG Request the newest frame as a row vector of JPEG bytes.
             obj.assertOpen();
-            if isempty(obj.Camera)
-                obj.Camera = tcpclient(obj.Host, obj.CameraPort, ...
-                    "Timeout", obj.Timeout);
-            end
-            write(obj.Camera, uint8(1), "uint8");
-            header = obj.readExact(obj.Camera, 4);
-            length = double(header(1)) * 16777216 + ...
-                double(header(2)) * 65536 + ...
-                double(header(3)) * 256 + double(header(4));
-            if length < 1 || length > 16 * 1024 * 1024
-                error("MoorebotScout:Protocol", ...
-                    "The bridge returned an invalid JPEG length: %d.", length);
-            end
-            jpeg = obj.readExact(obj.Camera, length);
-            if numel(jpeg) < 4 || ~isequal(jpeg(1:2), uint8([255 216])) || ...
-                    ~isequal(jpeg(end-1:end), uint8([255 217]))
-                error("MoorebotScout:Protocol", ...
-                    "The bridge returned data without JPEG markers.");
+            try
+                if isempty(obj.Camera)
+                    obj.Camera = tcpclient(obj.Host, obj.CameraPort, ...
+                        "Timeout", obj.Timeout);
+                end
+                write(obj.Camera, uint8(1), "uint8");
+                header = obj.readExact(obj.Camera, 4);
+                length = double(header(1)) * 16777216 + ...
+                    double(header(2)) * 65536 + ...
+                    double(header(3)) * 256 + double(header(4));
+                if length < 1 || length > 16 * 1024 * 1024
+                    error("MoorebotScout:Protocol", ...
+                        "The bridge returned an invalid JPEG length: %d.", length);
+                end
+                jpeg = obj.readExact(obj.Camera, length);
+                if numel(jpeg) < 4 || ~isequal(jpeg(1:2), uint8([255 216])) || ...
+                        ~isequal(jpeg(end-1:end), uint8([255 217]))
+                    error("MoorebotScout:Protocol", ...
+                        "The bridge returned data without JPEG markers.");
+                end
+            catch cause
+                % A partial or invalid frame loses the camera stream boundary.
+                % Reconnect on the next read without releasing control.
+                obj.Camera = [];
+                rethrow(cause);
             end
         end
 

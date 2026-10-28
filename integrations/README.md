@@ -126,6 +126,21 @@ frame. The sample segmentation code uses ordinary MATLAB array operations.
 
 ### Diagnose connection and camera delays
 
+If `liveCamera` reports `Another client already controls the bridge`, release
+the previous MATLAB connection with `clear scout cleanup` and close any other
+MATLAB or Python Scout client. If the owner cannot be found, stop and restart
+the bridge, then wait for its ready message before running one example.
+
+Download and extract a complete release package when updating: the executable
+and `integrations` folder belong together. In MATLAB, use
+`which MoorebotScout -all` and `which liveCamera -all` to check that an older
+copy is not taking precedence on the path. The updated `liveCamera` releases
+its client when its image window closes, an error occurs, or it is interrupted.
+
+Both clients close the camera socket after a failed transfer or invalid frame.
+The error is returned to the caller; a later camera request reconnects without
+replacing the control connection.
+
 If the constructor reports no bridge greeting, confirm the Rust terminal has
 reached the ready message and use its **commands** port (normally 43000), not
 the camera port (43001). Close other Scout clients. Older bridge versions
