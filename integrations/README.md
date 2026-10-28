@@ -137,6 +137,10 @@ and `integrations` folder belong together. In MATLAB, use
 copy is not taking precedence on the path. The updated `liveCamera` releases
 its client when its image window closes, an error occurs, or it is interrupted.
 
+Both clients close the camera socket after a failed transfer or invalid frame.
+The error is returned to the caller; a later camera request reconnects without
+replacing the control connection.
+
 If the constructor reports no bridge greeting, confirm the Rust terminal has
 reached the ready message and use its **commands** port (normally 43000), not
 the camera port (43001). Close other Scout clients. Older bridge versions
